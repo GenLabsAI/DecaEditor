@@ -3,8 +3,9 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { ToolName, ToolParamName } from './prompt/prompts.js'
-import { ChatMode, ModelSelection, ModelSelectionOptions, ProviderName, RefreshableProviderName, SettingsOfProvider } from './voidSettingsTypes.js'
+import { InternalToolInfo } from './prompt/prompts.js'
+import { ToolName, ToolParamName } from './toolsServiceTypes.js'
+import { ChatMode, ModelSelection, ModelSelectionOptions, OverridesOfModel, ProviderName, RefreshableProviderName, SettingsOfProvider } from './voidSettingsTypes.js'
 
 
 export const errorDetails = (fullError: Error | null): string | null => {
@@ -51,8 +52,22 @@ export type OpenAILLMChatMessage = {
 	content: string;
 	tool_call_id: string;
 }
-export type LLMChatMessage = AnthropicLLMChatMessage | OpenAILLMChatMessage
 
+export type GeminiLLMChatMessage = {
+	role: 'model'
+	parts: (
+		| { text: string; }
+		| { functionCall: { id: string; name: ToolName, args: Record<string, unknown> } }
+	)[];
+} | {
+	role: 'user';
+	parts: (
+		| { text: string; }
+		| { functionResponse: { id: string; name: ToolName, response: { output: string } } }
+	)[];
+}
+
+export type LLMChatMessage = AnthropicLLMChatMessage | OpenAILLMChatMessage | GeminiLLMChatMessage
 
 
 
@@ -64,12 +79,12 @@ export type LLMFIMMessage = {
 
 
 export type RawToolParamsObj = {
-	[paramName in ToolParamName]?: string;
+	[paramName in ToolParamName<ToolName>]?: string;
 }
 export type RawToolCallObj = {
 	name: ToolName;
 	rawParams: RawToolParamsObj;
-	doneParams: ToolParamName[];
+	doneParams: ToolParamName<ToolName>[];
 	id: string;
 	isDone: boolean;
 };
@@ -102,6 +117,7 @@ export type ServiceSendLLMMessageParams = {
 	logging: { loggingName: string, loggingExtras?: { [k: string]: any } };
 	modelSelection: ModelSelection | null;
 	modelSelectionOptions: ModelSelectionOptions | undefined;
+	overridesOfModel: OverridesOfModel | undefined;
 	onAbort: OnAbort;
 } & SendLLMType;
 
@@ -115,8 +131,10 @@ export type SendLLMMessageParams = {
 
 	modelSelection: ModelSelection;
 	modelSelectionOptions: ModelSelectionOptions | undefined;
+	overridesOfModel: OverridesOfModel | undefined;
 
 	settingsOfProvider: SettingsOfProvider;
+	mcpTools: InternalToolInfo[] | undefined;
 } & SendLLMType
 
 

@@ -14,47 +14,17 @@ import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextke
 
 import { ICodeEditorService } from '../../../../editor/browser/services/codeEditorService.js';
 import { IRange } from '../../../../editor/common/core/range.js';
-import { VOID_VIEW_ID } from './sidebarPane.js';
+import { VOID_VIEW_CONTAINER_ID, VOID_VIEW_ID } from './sidebarPane.js';
 import { IMetricsService } from '../common/metricsService.js';
-import { ISidebarStateService } from './sidebarStateService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { VOID_TOGGLE_SETTINGS_ACTION_ID } from './voidSettingsPane.js';
 import { VOID_CTRL_L_ACTION_ID } from './actionIDs.js';
-import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize2 } from '../../../../nls.js';
-import { StagingSelectionItem } from '../common/chatThreadServiceTypes.js';
 import { IChatThreadService } from './chatThreadService.js';
-import { getActiveWindow } from '../../../../base/browser/dom.js';
+import { IViewsService } from '../../../services/views/common/viewsService.js';
 
 // ---------- Register commands and keybindings ----------
 
-
-const findStagingSelectionIndex = (currentSelections: StagingSelectionItem[] | undefined, newSelection: StagingSelectionItem): number | null => {
-	if (!currentSelections) return null
-
-	for (let i = 0; i < currentSelections.length; i += 1) {
-		const s = currentSelections[i]
-
-		if (s.uri.fsPath !== newSelection.uri.fsPath) continue
-
-		if (s.type === 'File' && newSelection.type === 'File') {
-			return i
-		}
-		if (s.type === 'CodeSelection' && newSelection.type === 'CodeSelection') {
-			if (s.uri.fsPath !== newSelection.uri.fsPath) continue
-			// if there's any collision return true
-			const [oldStart, oldEnd] = s.range
-			const [newStart, newEnd] = newSelection.range
-			if (oldStart !== newStart || oldEnd !== newEnd) continue
-			return i
-		}
-		if (s.type === 'Folder' && newSelection.type === 'Folder') {
-			return i
-		}
-	}
-	return null
-}
 
 export const roundRangeToLines = (range: IRange | null | undefined, options: { emptySelectionBehavior: 'null' | 'line' }) => {
 	if (!range)
@@ -97,97 +67,21 @@ registerAction2(class extends Action2 {
 		super({ id: VOID_OPEN_SIDEBAR_ACTION_ID, title: localize2('voidOpenSidebar', 'Void: Open Sidebar'), f1: true });
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
-		const stateService = accessor.get(ISidebarStateService)
-		stateService.setState({ isHistoryOpen: false, currentTab: 'chat' })
-		stateService.fireFocusChat()
+		const viewsService = accessor.get(IViewsService)
+		const chatThreadsService = accessor.get(IChatThreadService)
+		viewsService.openViewContainer(VOID_VIEW_CONTAINER_ID)
+		await chatThreadsService.focusCurrentChat()
 	}
 })
 
 
-
-
-// Action: when press ctrl+L, show the sidebar chat and add to the selection
-const VOID_ADD_SELECTION_TO_SIDEBAR_ACTION_ID = 'void.sidebar.select'
-registerAction2(class extends Action2 {
-	constructor() {
-		super({ id: VOID_ADD_SELECTION_TO_SIDEBAR_ACTION_ID, title: localize2('voidAddToSidebar', 'Void: Add Selection to Sidebar'), f1: true });
-	}
-	async run(accessor: ServicesAccessor): Promise<void> {
-
-		const model = accessor.get(ICodeEditorService).getActiveCodeEditor()?.getModel()
-		if (!model)
-			return
-
-		const metricsService = accessor.get(IMetricsService)
-		const editorService = accessor.get(ICodeEditorService)
-
-		metricsService.capture('Ctrl+L', {})
-
-		const editor = editorService.getActiveCodeEditor()
-		// accessor.get(IEditorService).activeTextEditorControl?.getSelection()
-		const selectionRange = roundRangeToLines(editor?.getSelection(), { emptySelectionBehavior: 'null' })
-
-
-		// select whole lines
-		if (selectionRange) {
-			editor?.setSelection({ startLineNumber: selectionRange.startLineNumber, endLineNumber: selectionRange.endLineNumber, startColumn: 1, endColumn: Number.MAX_SAFE_INTEGER })
-		}
-
-
-		const newSelection: StagingSelectionItem = !selectionRange || (selectionRange.startLineNumber > selectionRange.endLineNumber) ? {
-			type: 'File',
-			uri: model.uri,
-			language: model.getLanguageId(),
-			state: { wasAddedAsCurrentFile: false }
-		} : {
-			type: 'CodeSelection',
-			uri: model.uri,
-			language: model.getLanguageId(),
-			range: [selectionRange.startLineNumber, selectionRange.endLineNumber],
-			state: { wasAddedAsCurrentFile: false }
-		}
-
-		// update the staging selections
-		const chatThreadService = accessor.get(IChatThreadService)
-
-		const focusedMessageIdx = chatThreadService.getCurrentFocusedMessageIdx()
-
-		// set the selections to the proper value
-		let selections: StagingSelectionItem[] = []
-		let setSelections = (s: StagingSelectionItem[]) => { }
-
-		if (focusedMessageIdx === undefined) {
-			selections = chatThreadService.getCurrentThreadState().stagingSelections
-			setSelections = (s: StagingSelectionItem[]) => chatThreadService.setCurrentThreadState({ stagingSelections: s })
-		} else {
-			selections = chatThreadService.getCurrentMessageState(focusedMessageIdx).stagingSelections
-			setSelections = (s) => chatThreadService.setCurrentMessageState(focusedMessageIdx, { stagingSelections: s })
-		}
-
-		// if matches with existing selection, overwrite (since text may change)
-		const idx = findStagingSelectionIndex(selections, newSelection)
-		if (idx !== null && idx !== -1) {
-			setSelections([
-				...selections!.slice(0, idx),
-				newSelection,
-				...selections!.slice(idx + 1, Infinity)
-			])
-		}
-		// if no match, add it
-		else {
-			setSelections([...(selections ?? []), newSelection])
-		}
-
-	}
-});
-
-
+// cmd L
 registerAction2(class extends Action2 {
 	constructor() {
 		super({
 			id: VOID_CTRL_L_ACTION_ID,
 			f1: true,
-			title: localize2('voidCtrlL', 'Void: Add Selection to Chat'),
+			title: localize2('voidCmdL', 'Void: Add Selection to Chat'),
 			keybinding: {
 				primary: KeyMod.CtrlCmd | KeyCode.KeyL,
 				weight: KeybindingWeight.VoidExtension
@@ -195,72 +89,119 @@ registerAction2(class extends Action2 {
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
+		// Get services
 		const commandService = accessor.get(ICommandService)
-		await commandService.executeCommand(VOID_OPEN_SIDEBAR_ACTION_ID)
-		await commandService.executeCommand(VOID_ADD_SELECTION_TO_SIDEBAR_ACTION_ID)
-	}
-})
-
-
-const openNewThreadAndFireFocus = (accessor: ServicesAccessor) => {
-
-	const stateService = accessor.get(ISidebarStateService)
-	stateService.setState({ isHistoryOpen: false, currentTab: 'chat' })
-	const chatThreadService = accessor.get(IChatThreadService)
-	chatThreadService.openNewThread()
-
-	// focus
-	stateService.fireFocusChat()
-	const window = getActiveWindow()
-	window.requestAnimationFrame(() => stateService.fireFocusChat())
-
-}
-
-
-// New chat menu button
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: 'void.newChatAction',
-			title: 'New Chat',
-			icon: { id: 'add' },
-			menu: [{ id: MenuId.ViewTitle, group: 'navigation', when: ContextKeyExpr.equals('view', VOID_VIEW_ID), }],
-
-		});
-	}
-	async run(accessor: ServicesAccessor): Promise<void> {
-
+		const viewsService = accessor.get(IViewsService)
 		const metricsService = accessor.get(IMetricsService)
-		metricsService.capture('Chat Navigation', { type: 'New Chat' })
+		const editorService = accessor.get(ICodeEditorService)
+		const chatThreadService = accessor.get(IChatThreadService)
 
-		openNewThreadAndFireFocus(accessor)
+		metricsService.capture('Ctrl+L', {})
 
+		// capture selection and model before opening the chat panel
+		const editor = editorService.getActiveCodeEditor()
+		const model = editor?.getModel()
+		if (!model) return
+
+		const selectionRange = roundRangeToLines(editor?.getSelection(), { emptySelectionBehavior: 'null' })
+
+		// open panel
+		const wasAlreadyOpen = viewsService.isViewContainerVisible(VOID_VIEW_CONTAINER_ID)
+		if (!wasAlreadyOpen) {
+			await commandService.executeCommand(VOID_OPEN_SIDEBAR_ACTION_ID)
+		}
+
+		// Add selection to chat
+		// add line selection
+		if (selectionRange) {
+			editor?.setSelection({
+				startLineNumber: selectionRange.startLineNumber,
+				endLineNumber: selectionRange.endLineNumber,
+				startColumn: 1,
+				endColumn: Number.MAX_SAFE_INTEGER
+			})
+			chatThreadService.addNewStagingSelection({
+				type: 'CodeSelection',
+				uri: model.uri,
+				language: model.getLanguageId(),
+				range: [selectionRange.startLineNumber, selectionRange.endLineNumber],
+				state: { wasAddedAsCurrentFile: false },
+			})
+		}
+		// add file
+		else {
+			chatThreadService.addNewStagingSelection({
+				type: 'File',
+				uri: model.uri,
+				language: model.getLanguageId(),
+				state: { wasAddedAsCurrentFile: false },
+			})
+		}
+
+		await chatThreadService.focusCurrentChat()
 	}
 })
 
-// New chat keybind
+
+// New chat keybind + menu button
+const VOID_CMD_SHIFT_L_ACTION_ID = 'void.cmdShiftL'
 registerAction2(class extends Action2 {
 	constructor() {
 		super({
-			id: 'void.newChatKeybindAction',
-			title: 'New Chat Keybind',
+			id: VOID_CMD_SHIFT_L_ACTION_ID,
+			title: 'New Chat',
 			keybinding: {
 				primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyL,
 				weight: KeybindingWeight.VoidExtension,
 			},
+			icon: { id: 'add' },
+			menu: [{ id: MenuId.ViewTitle, group: 'navigation', when: ContextKeyExpr.equals('view', VOID_VIEW_ID), }],
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
 
 		const metricsService = accessor.get(IMetricsService)
-		const commandService = accessor.get(ICommandService)
-		metricsService.capture('Chat Navigation', { type: 'New Chat Keybind' })
+		const chatThreadsService = accessor.get(IChatThreadService)
+		const editorService = accessor.get(ICodeEditorService)
+		metricsService.capture('Chat Navigation', { type: 'Start New Chat' })
 
-		openNewThreadAndFireFocus(accessor)
+		// get current selections and value to transfer
+		const oldThreadId = chatThreadsService.state.currentThreadId
+		const oldThread = chatThreadsService.state.allThreads[oldThreadId]
 
-		// add user's selection to chat
-		await commandService.executeCommand(VOID_CTRL_L_ACTION_ID)
+		const oldUI = await oldThread?.state.mountedInfo?.whenMounted
 
+		const oldSelns = oldThread?.state.stagingSelections
+		const oldVal = oldUI?.textAreaRef?.current?.value
+
+		// open and focus new thread
+		chatThreadsService.openNewThread()
+		await chatThreadsService.focusCurrentChat()
+
+
+		// set new thread values
+		const newThreadId = chatThreadsService.state.currentThreadId
+		const newThread = chatThreadsService.state.allThreads[newThreadId]
+
+		const newUI = await newThread?.state.mountedInfo?.whenMounted
+		chatThreadsService.setCurrentThreadState({ stagingSelections: oldSelns, })
+		if (newUI?.textAreaRef?.current && oldVal) newUI.textAreaRef.current.value = oldVal
+
+
+		// if has selection, add it
+		const editor = editorService.getActiveCodeEditor()
+		const model = editor?.getModel()
+		if (!model) return
+		const selectionRange = roundRangeToLines(editor?.getSelection(), { emptySelectionBehavior: 'null' })
+		if (!selectionRange) return
+		editor?.setSelection({ startLineNumber: selectionRange.startLineNumber, endLineNumber: selectionRange.endLineNumber, startColumn: 1, endColumn: Number.MAX_SAFE_INTEGER })
+		chatThreadsService.addNewStagingSelection({
+			type: 'CodeSelection',
+			uri: model.uri,
+			language: model.getLanguageId(),
+			range: [selectionRange.startLineNumber, selectionRange.endLineNumber],
+			state: { wasAddedAsCurrentFile: false },
+		})
 	}
 })
 
@@ -283,18 +224,12 @@ registerAction2(class extends Action2 {
 			return;
 		}
 
-		const stateService = accessor.get(ISidebarStateService)
 		const metricsService = accessor.get(IMetricsService)
 
+		const commandService = accessor.get(ICommandService)
 
 		metricsService.capture('Chat Navigation', { type: 'History' })
-
-		openNewThreadAndFireFocus(accessor)
-
-		// doesnt do anything right now
-		stateService.setState({ isHistoryOpen: !stateService.state.isHistoryOpen, currentTab: 'chat' })
-		stateService.fireBlurChat()
-
+		commandService.executeCommand(VOID_CMD_SHIFT_L_ACTION_ID)
 
 	}
 })
@@ -319,28 +254,28 @@ registerAction2(class extends Action2 {
 
 
 
-export class TabSwitchListener extends Disposable {
+// export class TabSwitchListener extends Disposable {
 
-	constructor(
-		onSwitchTab: () => void,
-		@ICodeEditorService private readonly _editorService: ICodeEditorService,
-	) {
-		super()
+// 	constructor(
+// 		onSwitchTab: () => void,
+// 		@ICodeEditorService private readonly _editorService: ICodeEditorService,
+// 	) {
+// 		super()
 
-		// when editor switches tabs (models)
-		const addTabSwitchListeners = (editor: ICodeEditor) => {
-			this._register(editor.onDidChangeModel(e => {
-				if (e.newModelUrl?.scheme !== 'file') return
-				onSwitchTab()
-			}))
-		}
+// 		// when editor switches tabs (models)
+// 		const addTabSwitchListeners = (editor: ICodeEditor) => {
+// 			this._register(editor.onDidChangeModel(e => {
+// 				if (e.newModelUrl?.scheme !== 'file') return
+// 				onSwitchTab()
+// 			}))
+// 		}
 
-		const initializeEditor = (editor: ICodeEditor) => {
-			addTabSwitchListeners(editor)
-		}
+// 		const initializeEditor = (editor: ICodeEditor) => {
+// 			addTabSwitchListeners(editor)
+// 		}
 
-		// initialize current editors + any new editors
-		for (let editor of this._editorService.listCodeEditors()) initializeEditor(editor)
-		this._register(this._editorService.onCodeEditorAdd(editor => { initializeEditor(editor) }))
-	}
-}
+// 		// initialize current editors + any new editors
+// 		for (let editor of this._editorService.listCodeEditors()) initializeEditor(editor)
+// 		this._register(this._editorService.onCodeEditorAdd(editor => { initializeEditor(editor) }))
+// 	}
+// }

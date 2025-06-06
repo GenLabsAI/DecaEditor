@@ -8,28 +8,23 @@ import { QueryBuilder } from '../../../services/search/common/queryBuilder.js'
 import { ISearchService } from '../../../services/search/common/search.js'
 import { IEditCodeService } from './editCodeServiceInterface.js'
 import { ITerminalToolService } from './terminalToolService.js'
-import { LintErrorItem, ToolCallParams, ToolResultType } from '../common/toolsServiceTypes.js'
+import { LintErrorItem, BuiltinToolCallParams, BuiltinToolResultType, BuiltinToolName } from '../common/toolsServiceTypes.js'
 import { IVoidModelService } from '../common/voidModelService.js'
 import { EndOfLinePreference } from '../../../../editor/common/model.js'
-import { basename } from '../../../../base/common/path.js'
 import { IVoidCommandBarService } from './voidCommandBarService.js'
-import { computeDirectoryTree1Deep, IDirectoryStrService, stringifyDirectoryTree1Deep } from './directoryStrService.js'
+import { computeDirectoryTree1Deep, IDirectoryStrService, stringifyDirectoryTree1Deep } from '../common/directoryStrService.js'
 import { IMarkerService, MarkerSeverity } from '../../../../platform/markers/common/markers.js'
 import { timeout } from '../../../../base/common/async.js'
 import { RawToolParamsObj } from '../common/sendLLMMessageTypes.js'
-import { MAX_CHILDREN_URIs_PAGE, MAX_FILE_CHARS_PAGE, MAX_TERMINAL_BG_COMMAND_TIME, MAX_TERMINAL_INACTIVE_TIME, ToolName } from '../common/prompt/prompts.js'
+import { MAX_CHILDREN_URIs_PAGE, MAX_FILE_CHARS_PAGE, MAX_TERMINAL_BG_COMMAND_TIME, MAX_TERMINAL_INACTIVE_TIME } from '../common/prompt/prompts.js'
 import { IVoidSettingsService } from '../common/voidSettingsService.js'
+import { generateUuid } from '../../../../base/common/uuid.js'
 
 
 // tool use for AI
-
-
-
-
-type ValidateParams = { [T in ToolName]: (p: RawToolParamsObj) => ToolCallParams[T] }
-type CallTool = { [T in ToolName]: (p: ToolCallParams[T]) => Promise<{ result: ToolResultType[T] | Promise<ToolResultType[T]>, interruptTool?: () => void }> }
-type ToolResultToString = { [T in ToolName]: (p: ToolCallParams[T], result: Awaited<ToolResultType[T]>) => string }
-
+type ValidateBuiltinParams = { [T in BuiltinToolName]: (p: RawToolParamsObj) => BuiltinToolCallParams[T] }
+type CallBuiltinTool = { [T in BuiltinToolName]: (p: BuiltinToolCallParams[T]) => Promise<{ result: BuiltinToolResultType[T] | Promise<BuiltinToolResultType[T]>, interruptTool?: () => void }> }
+type BuiltinToolResultToString = { [T in BuiltinToolName]: (p: BuiltinToolCallParams[T], result: Awaited<BuiltinToolResultType[T]>) => string }
 
 
 const isFalsy = (u: unknown) => {
@@ -37,17 +32,39 @@ const isFalsy = (u: unknown) => {
 }
 
 const validateStr = (argName: string, value: unknown) => {
-	if (typeof value !== 'string') throw new Error(`Invalid LLM output format: ${argName} must be a string, but it's a ${typeof value}. Value: ${value}.`)
+	if (value === null) throw new Error(`Invalid LLM output: ${argName} was null.`)
+	if (typeof value !== 'string') throw new Error(`Invalid LLM output format: ${argName} must be a string, but its type is "${typeof value}". Full value: ${JSON.stringify(value)}.`)
 	return value
 }
 
 
 // We are NOT checking to make sure in workspace
-// TODO!!!! check to make sure folder/file exists
 const validateURI = (uriStr: unknown) => {
-	if (typeof uriStr !== 'string') throw new Error(`Invalid LLM output format: Provided uri must be a string, but it's a ${typeof uriStr}. Value: ${uriStr}.`)
-	const uri = URI.file(uriStr)
-	return uri
+	if (uriStr === null) throw new Error(`Invalid LLM output: uri was null.`)
+	if (typeof uriStr !== 'string') throw new Error(`Invalid LLM output format: Provided uri must be a string, but it's a(n) ${typeof uriStr}. Full value: ${JSON.stringify(uriStr)}.`)
+
+	// Check if it's already a full URI with scheme (e.g., vscode-remote://, file://, etc.)
+	// Look for :// pattern which indicates a scheme is present
+	// Examples of supported URIs:
+	// - vscode-remote://wsl+Ubuntu/home/user/file.txt (WSL)
+	// - vscode-remote://ssh-remote+myserver/home/user/file.txt (SSH)
+	// - file:///home/user/file.txt (local file with scheme)
+	// - /home/user/file.txt (local file path, will be converted to file://)
+	// - C:\Users\file.txt (Windows local path, will be converted to file://)
+	if (uriStr.includes('://')) {
+		try {
+			const uri = URI.parse(uriStr)
+			return uri
+		} catch (e) {
+			// If parsing fails, it's a malformed URI
+			throw new Error(`Invalid URI format: ${uriStr}. Error: ${e}`)
+		}
+	} else {
+		// No scheme present, treat as file path
+		// This handles regular file paths like /home/user/file.txt or C:\Users\file.txt
+		const uri = URI.file(uriStr)
+		return uri
+	}
 }
 
 const validateOptionalURI = (uriStr: unknown) => {
@@ -83,14 +100,6 @@ const validateNumber = (numStr: unknown, opts: { default: number | null }) => {
 	return opts.default
 }
 
-const validateRecursiveParamStr = (paramsUnknown: unknown) => {
-	if (!paramsUnknown) return false
-	if (typeof paramsUnknown !== 'string') throw new Error('Invalid LLM output format: Error calling tool: provided params must be a string.')
-	const params = paramsUnknown
-	const isRecursive = params.includes('r')
-	return isRecursive
-}
-
 const validateProposedTerminalId = (terminalIdUnknown: unknown) => {
 	if (!terminalIdUnknown) throw new Error(`A value for terminalID must be specified, but the value was "${terminalIdUnknown}"`)
 	const terminalId = terminalIdUnknown + ''
@@ -117,9 +126,9 @@ const checkIfIsFolder = (uriStr: string) => {
 
 export interface IToolsService {
 	readonly _serviceBrand: undefined;
-	validateParams: ValidateParams;
-	callTool: CallTool;
-	stringOfResult: ToolResultToString;
+	validateParams: ValidateBuiltinParams;
+	callTool: CallBuiltinTool;
+	stringOfResult: BuiltinToolResultToString;
 }
 
 export const IToolsService = createDecorator<IToolsService>('ToolsService');
@@ -128,9 +137,9 @@ export class ToolsService implements IToolsService {
 
 	readonly _serviceBrand: undefined;
 
-	public validateParams: ValidateParams;
-	public callTool: CallTool;
-	public stringOfResult: ToolResultToString;
+	public validateParams: ValidateBuiltinParams;
+	public callTool: CallBuiltinTool;
+	public stringOfResult: BuiltinToolResultToString;
 
 	constructor(
 		@IFileService fileService: IFileService,
@@ -145,7 +154,6 @@ export class ToolsService implements IToolsService {
 		@IMarkerService private readonly markerService: IMarkerService,
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
 	) {
-
 		const queryBuilder = instantiationService.createInstance(QueryBuilder);
 
 		this.validateParams = {
@@ -233,32 +241,48 @@ export class ToolsService implements IToolsService {
 			},
 
 			delete_file_or_folder: (params: RawToolParamsObj) => {
-				const { uri: uriUnknown, params: paramsStr } = params
+				const { uri: uriUnknown, is_recursive: isRecursiveUnknown } = params
 				const uri = validateURI(uriUnknown)
-				const isRecursive = validateRecursiveParamStr(paramsStr)
+				const isRecursive = validateBoolean(isRecursiveUnknown, { default: false })
 				const uriStr = validateStr('uri', uriUnknown)
 				const isFolder = checkIfIsFolder(uriStr)
 				return { uri, isRecursive, isFolder }
 			},
 
-			edit_file: (params: RawToolParamsObj) => {
-				const { uri: uriStr, change_diff: changeDiffUnknown } = params
+			rewrite_file: (params: RawToolParamsObj) => {
+				const { uri: uriStr, new_content: newContentUnknown } = params
 				const uri = validateURI(uriStr)
-				const changeDiff = validateStr('changeDiff', changeDiffUnknown)
-				return { uri, changeDiff }
+				const newContent = validateStr('newContent', newContentUnknown)
+				return { uri, newContent }
+			},
+
+			edit_file: (params: RawToolParamsObj) => {
+				const { uri: uriStr, search_replace_blocks: searchReplaceBlocksUnknown } = params
+				const uri = validateURI(uriStr)
+				const searchReplaceBlocks = validateStr('searchReplaceBlocks', searchReplaceBlocksUnknown)
+				return { uri, searchReplaceBlocks }
 			},
 
 			// ---
 
 			run_command: (params: RawToolParamsObj) => {
-				const { command: commandUnknown, persistent_terminal_id: terminalIdUnknown } = params;
+				const { command: commandUnknown, cwd: cwdUnknown } = params
+				const command = validateStr('command', commandUnknown)
+				const cwd = validateOptionalStr('cwd', cwdUnknown)
+				const terminalId = generateUuid()
+				return { command, cwd, terminalId }
+			},
+			run_persistent_command: (params: RawToolParamsObj) => {
+				const { command: commandUnknown, persistent_terminal_id: persistentTerminalIdUnknown } = params;
 				const command = validateStr('command', commandUnknown);
-				const persistentTerminalId = terminalIdUnknown ? validateProposedTerminalId(terminalIdUnknown) : null;
+				const persistentTerminalId = validateProposedTerminalId(persistentTerminalIdUnknown)
 				return { command, persistentTerminalId };
 			},
-			open_persistent_terminal: (_params: RawToolParamsObj) => {
+			open_persistent_terminal: (params: RawToolParamsObj) => {
+				const { cwd: cwdUnknown } = params;
+				const cwd = validateOptionalStr('cwd', cwdUnknown)
 				// No parameters needed; will open a new background terminal
-				return {};
+				return { cwd };
 			},
 			kill_persistent_terminal: (params: RawToolParamsObj) => {
 				const { persistent_terminal_id: terminalIdUnknown } = params;
@@ -285,12 +309,14 @@ export class ToolsService implements IToolsService {
 					contents = model.getValueInRange({ startLineNumber, startColumn: 1, endLineNumber, endColumn: Number.MAX_SAFE_INTEGER }, EndOfLinePreference.LF)
 				}
 
+				const totalNumLines = model.getLineCount()
+
 				const fromIdx = MAX_FILE_CHARS_PAGE * (pageNumber - 1)
 				const toIdx = MAX_FILE_CHARS_PAGE * pageNumber - 1
 				const fileContents = contents.slice(fromIdx, toIdx + 1) // paginate
 				const hasNextPage = (contents.length - 1) - toIdx >= 1
 				const totalFileLen = contents.length
-				return { result: { fileContents, totalFileLen, hasNextPage } }
+				return { result: { fileContents, totalFileLen, hasNextPage, totalNumLines } }
 			},
 
 			ls_dir: async ({ uri, pageNumber }) => {
@@ -308,6 +334,7 @@ export class ToolsService implements IToolsService {
 				const query = queryBuilder.file(workspaceContextService.getWorkspace().folders.map(f => f.uri), {
 					filePattern: queryStr,
 					includePattern: includePattern ?? undefined,
+					sortByScore: true, // makes results 10x better
 				})
 				const data = await searchService.fileSearch(query, CancellationToken.None)
 
@@ -383,54 +410,57 @@ export class ToolsService implements IToolsService {
 				return { result: {} }
 			},
 
-			edit_file: async ({ uri, changeDiff }) => {
+			rewrite_file: async ({ uri, newContent }) => {
 				await voidModelService.initializeModel(uri)
 				if (this.commandBarService.getStreamState(uri) === 'streaming') {
 					throw new Error(`Another LLM is currently making changes to this file. Please stop streaming for now and ask the user to resume later.`)
 				}
-				const opts = {
-					uri,
-					applyStr: changeDiff,
-					from: 'ClickApply',
-					startBehavior: 'keep-conflicts',
-				} as const
+				await editCodeService.callBeforeApplyOrEdit(uri)
+				editCodeService.instantlyRewriteFile({ uri, newContent })
+				// at end, get lint errors
+				const lintErrorsPromise = Promise.resolve().then(async () => {
+					await timeout(2000)
+					const { lintErrors } = this._getLintErrors(uri)
+					return { lintErrors }
+				})
+				return { result: lintErrorsPromise }
+			},
 
-				await editCodeService.callBeforeStartApplying(opts)
-				const res = editCodeService.startApplying(opts)
-				if (!res) throw new Error(`The Apply model did not start running on ${basename(uri.fsPath)}. Please try again.`)
-				const [diffZoneURI, applyDonePromise] = res
-
-				const interruptTool = () => { // must reject the applyPromiseDone promise
-					editCodeService.interruptURIStreaming({ uri: diffZoneURI })
+			edit_file: async ({ uri, searchReplaceBlocks }) => {
+				await voidModelService.initializeModel(uri)
+				if (this.commandBarService.getStreamState(uri) === 'streaming') {
+					throw new Error(`Another LLM is currently making changes to this file. Please stop streaming for now and ask the user to resume later.`)
 				}
+				await editCodeService.callBeforeApplyOrEdit(uri)
+				editCodeService.instantlyApplySearchReplaceBlocks({ uri, searchReplaceBlocks })
 
 				// at end, get lint errors
-				const lintErrorsPromise = applyDonePromise.then(async () => {
+				const lintErrorsPromise = Promise.resolve().then(async () => {
 					await timeout(2000)
 					const { lintErrors } = this._getLintErrors(uri)
 					return { lintErrors }
 				})
 
-				return { result: lintErrorsPromise, interruptTool }
+				return { result: lintErrorsPromise }
 			},
 			// ---
-			run_command: async ({ command, persistentTerminalId }) => {
-				const { terminalId, resPromise } = await this.terminalToolService.runCommand(command, persistentTerminalId)
-				const interruptTool = () => {
-					this.terminalToolService.killTerminal(terminalId)
-				}
-				return { result: resPromise, interruptTool }
+			run_command: async ({ command, cwd, terminalId }) => {
+				const { resPromise, interrupt } = await this.terminalToolService.runCommand(command, { type: 'temporary', cwd, terminalId })
+				return { result: resPromise, interruptTool: interrupt }
 			},
-			open_persistent_terminal: async () => {
-				const persistentTerminalId = await this.terminalToolService.createTerminal()
+			run_persistent_command: async ({ command, persistentTerminalId }) => {
+				const { resPromise, interrupt } = await this.terminalToolService.runCommand(command, { type: 'persistent', persistentTerminalId })
+				return { result: resPromise, interruptTool: interrupt }
+			},
+			open_persistent_terminal: async ({ cwd }) => {
+				const persistentTerminalId = await this.terminalToolService.createPersistentTerminal({ cwd })
 				return { result: { persistentTerminalId } }
 			},
 			kill_persistent_terminal: async ({ persistentTerminalId }) => {
 				// Close the background terminal by sending exit
-				await this.terminalToolService.killTerminal(persistentTerminalId)
+				await this.terminalToolService.killPersistentTerminal(persistentTerminalId)
 				return { result: {} }
 			},
-
 		}
 
 
@@ -446,7 +476,7 @@ export class ToolsService implements IToolsService {
 		// given to the LLM after the call for successful tool calls
 		this.stringOfResult = {
 			read_file: (params, result) => {
-				return `${params.uri.fsPath}\n\`\`\`\n${result.fileContents}\n\`\`\`${nextPageStr(result.hasNextPage)}`
+				return `${params.uri.fsPath}\n\`\`\`\n${result.fileContents}\n\`\`\`${nextPageStr(result.hasNextPage)}${result.hasNextPage ? `\nMore info because truncated: this file has ${result.totalNumLines} lines, or ${result.totalFileLen} characters.` : ''}`
 			},
 			ls_dir: (params, result) => {
 				const dirTreeStr = stringifyDirectoryTree1Deep(params, result)
@@ -491,34 +521,42 @@ export class ToolsService implements IToolsService {
 
 				return `Change successfully made to ${params.uri.fsPath}.${lintErrsString}`
 			},
-			run_command: (params, result) => {
-				const {
-					resolveReason,
-					result: result_,
-				} = result
-				const { persistentTerminalId } = params
+			rewrite_file: (params, result) => {
+				const lintErrsString = (
+					this.voidSettingsService.state.globalSettings.includeToolLintErrors ?
+						(result.lintErrors ? ` Lint errors found after change:\n${stringifyLintErrors(result.lintErrors)}.\nIf this is related to a change made while calling this tool, you might want to fix the error.`
+							: ` No lint errors found.`)
+						: '')
 
+				return `Change successfully made to ${params.uri.fsPath}.${lintErrsString}`
+			},
+			run_command: (params, result) => {
+				const { resolveReason, result: result_, } = result
 				// success
 				if (resolveReason.type === 'done') {
-					const desc = persistentTerminalId ? ` in terminal ${persistentTerminalId}` : ''
-					return `Terminal command executed and finished${desc}. Result (exit code ${resolveReason.exitCode}):\n${result_}`
-				}
-
-				// bg command
-				if (persistentTerminalId !== null) {
-					if (resolveReason.type === 'timeout') {
-						return `Terminal command is running in terminal ${persistentTerminalId}. Here are the current outputs (after ${MAX_TERMINAL_BG_COMMAND_TIME} seconds):\n${result_}`
-					}
+					return `${result_}\n(exit code ${resolveReason.exitCode})`
 				}
 				// normal command
-				else {
-					if (resolveReason.type === 'timeout') {
-						return `Terminal command ran, but was interrupted after ${MAX_TERMINAL_INACTIVE_TIME}s of inactivity and did not necessarily finish successfully. Full output:\n${result_}`
-					}
+				if (resolveReason.type === 'timeout') {
+					return `${result_}\nTerminal command ran, but was automatically killed by Void after ${MAX_TERMINAL_INACTIVE_TIME}s of inactivity and did not finish successfully. To try with more time, open a persistent terminal and run the command there.`
 				}
-
 				throw new Error(`Unexpected internal error: Terminal command did not resolve with a valid reason.`)
 			},
+
+			run_persistent_command: (params, result) => {
+				const { resolveReason, result: result_, } = result
+				const { persistentTerminalId } = params
+				// success
+				if (resolveReason.type === 'done') {
+					return `${result_}\n(exit code ${resolveReason.exitCode})`
+				}
+				// bg command
+				if (resolveReason.type === 'timeout') {
+					return `${result_}\nTerminal command is running in terminal ${persistentTerminalId}. The given outputs are the results after ${MAX_TERMINAL_BG_COMMAND_TIME} seconds.`
+				}
+				throw new Error(`Unexpected internal error: Terminal command did not resolve with a valid reason.`)
+			},
+
 			open_persistent_terminal: (_params, result) => {
 				const { persistentTerminalId } = result;
 				return `Successfully created persistent terminal. persistentTerminalId="${persistentTerminalId}"`;
@@ -526,7 +564,6 @@ export class ToolsService implements IToolsService {
 			kill_persistent_terminal: (params, _result) => {
 				return `Successfully closed terminal "${params.persistentTerminalId}".`;
 			},
-
 		}
 
 

@@ -4,7 +4,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { defaultModelsOfProvider, defaultProviderSettings } from './modelCapabilities.js';
+import { defaultModelsOfProvider, defaultProviderSettings, ModelOverrides } from './modelCapabilities.js';
 import { ToolApprovalType } from './toolsServiceTypes.js';
 import { VoidSettingsState } from './voidSettingsService.js'
 
@@ -33,7 +33,7 @@ export type VoidStatefulModelInfo = { // <-- STATEFUL
 	modelName: string,
 	type: 'default' | 'autodetected' | 'custom';
 	isHidden: boolean, // whether or not the user is hiding it (switched off)
-}  // TODO!!! eventually we'd want to let the user change supportsFIM, etc on the model themselves
+}
 
 
 
@@ -92,16 +92,19 @@ export const displayInfoOfProviderName = (providerName: ProviderName): DisplayIn
 		return { title: 'Groq', }
 	}
 	else if (providerName === 'xAI') {
-		return { title: 'xAI', }
+		return { title: 'Grok (xAI)', }
 	}
 	else if (providerName === 'mistral') {
 		return { title: 'Mistral', }
 	}
-	// else if (providerName === 'googleVertex') {
-	// 	return { title: 'Google Vertex AI', }
-	// }
+	else if (providerName === 'googleVertex') {
+		return { title: 'Google Vertex AI', }
+	}
 	else if (providerName === 'microsoftAzure') {
 		return { title: 'Microsoft Azure OpenAI', }
+	}
+	else if (providerName === 'awsBedrock') {
+		return { title: 'AWS Bedrock', }
 	}
 
 	throw new Error(`descOfProviderName: Unknown provider name: "${providerName}"`)
@@ -112,17 +115,18 @@ export const subTextMdOfProviderName = (providerName: ProviderName): string => {
 	if (providerName === 'anthropic') return 'Get your [API Key here](https://console.anthropic.com/settings/keys).'
 	if (providerName === 'openAI') return 'Get your [API Key here](https://platform.openai.com/api-keys).'
 	if (providerName === 'deepseek') return 'Get your [API Key here](https://platform.deepseek.com/api_keys).'
-	if (providerName === 'openRouter') return 'Get your [API Key here](https://openrouter.ai/settings/keys).'
-	if (providerName === 'gemini') return 'Get your [API Key here](https://aistudio.google.com/apikey).'
+	if (providerName === 'openRouter') return 'Get your [API Key here](https://openrouter.ai/settings/keys). Read about [rate limits here](https://openrouter.ai/docs/api-reference/limits).'
+	if (providerName === 'gemini') return 'Get your [API Key here](https://aistudio.google.com/apikey). Read about [rate limits here](https://ai.google.dev/gemini-api/docs/rate-limits#current-rate-limits).'
 	if (providerName === 'groq') return 'Get your [API Key here](https://console.groq.com/keys).'
 	if (providerName === 'xAI') return 'Get your [API Key here](https://console.x.ai).'
 	if (providerName === 'mistral') return 'Get your [API Key here](https://console.mistral.ai/api-keys).'
-	if (providerName === 'openAICompatible') return `Use any OpenAI-compatible endpoint (LM Studio, LiteLM, etc).`
-	// if (providerName === 'googleVertex') return 'You must authenticate before using Vertex with Void. Read more about endpoints [here](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/call-vertex-using-openai-library), and regions [here](https://cloud.google.com/vertex-ai/docs/general/locations#available-regions).'
+	if (providerName === 'openAICompatible') return `Use any provider that's OpenAI-compatible (use this for llama.cpp and more).`
+	if (providerName === 'googleVertex') return 'You must authenticate before using Vertex with Void. Read more about endpoints [here](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/call-vertex-using-openai-library), and regions [here](https://cloud.google.com/vertex-ai/docs/general/locations#available-regions).'
 	if (providerName === 'microsoftAzure') return 'Read more about endpoints [here](https://learn.microsoft.com/en-us/rest/api/aifoundry/model-inference/get-chat-completions/get-chat-completions?view=rest-aifoundry-model-inference-2024-05-01-preview&tabs=HTTP), and get your API key [here](https://learn.microsoft.com/en-us/azure/search/search-security-api-keys?tabs=rest-use%2Cportal-find%2Cportal-query#find-existing-keys).'
-	if (providerName === 'ollama') return 'If you would like to change this endpoint, please read more about [Endpoints here](https://github.com/ollama/ollama/blob/main/docs/faq.md#how-can-i-expose-ollama-on-my-network).'
-	if (providerName === 'vLLM') return 'If you would like to change this endpoint, please read more about [Endpoints here](https://docs.vllm.ai/en/latest/getting_started/quickstart.html#openai-compatible-server).'
-	if (providerName === 'lmStudio') return 'If you would like to change this endpoint, please more about [Endpoints here](https://lmstudio.ai/docs/app/api/endpoints/openai).'
+	if (providerName === 'awsBedrock') return 'Connect via a LiteLLM proxy or the AWS [Bedrock-Access-Gateway](https://github.com/aws-samples/bedrock-access-gateway). LiteLLM Bedrock setup docs are [here](https://docs.litellm.ai/docs/providers/bedrock).'
+	if (providerName === 'ollama') return 'Read more about custom [Endpoints here](https://github.com/ollama/ollama/blob/main/docs/faq.md#how-can-i-expose-ollama-on-my-network).'
+	if (providerName === 'vLLM') return 'Read more about custom [Endpoints here](https://docs.vllm.ai/en/latest/getting_started/quickstart.html#openai-compatible-server).'
+	if (providerName === 'lmStudio') return 'Read more about custom [Endpoints here](https://lmstudio.ai/docs/app/api/endpoints/openai).'
 	if (providerName === 'liteLLM') return 'Read more about endpoints [here](https://docs.litellm.ai/docs/providers/openai_compatible).'
 
 	throw new Error(`subTextMdOfProviderName: Unknown provider name: "${providerName}"`)
@@ -149,9 +153,10 @@ export const displayInfoOfSettingName = (providerName: ProviderName, settingName
 									providerName === 'openAICompatible' ? 'sk-key...' :
 										providerName === 'xAI' ? 'xai-key...' :
 											providerName === 'mistral' ? 'api-key...' :
-												// providerName === 'googleVertex' ? 'AIzaSy...' :
-												providerName === 'microsoftAzure' ? 'key-...' :
-													'',
+												providerName === 'googleVertex' ? 'AIzaSy...' :
+													providerName === 'microsoftAzure' ? 'key-...' :
+														providerName === 'awsBedrock' ? 'key-...' :
+															'',
 
 			isPasswordField: true,
 		}
@@ -162,29 +167,36 @@ export const displayInfoOfSettingName = (providerName: ProviderName, settingName
 				providerName === 'vLLM' ? 'Endpoint' :
 					providerName === 'lmStudio' ? 'Endpoint' :
 						providerName === 'openAICompatible' ? 'baseURL' : // (do not include /chat/completions)
-							// providerName === 'googleVertex' ? 'baseURL' :
-							providerName === 'microsoftAzure' ? 'baseURL' :
-								providerName === 'liteLLM' ? 'baseURL' :
-									'(never)',
+							providerName === 'googleVertex' ? 'baseURL' :
+								providerName === 'microsoftAzure' ? 'baseURL' :
+									providerName === 'liteLLM' ? 'baseURL' :
+										providerName === 'awsBedrock' ? 'Endpoint' :
+											'(never)',
 
 			placeholder: providerName === 'ollama' ? defaultProviderSettings.ollama.endpoint
 				: providerName === 'vLLM' ? defaultProviderSettings.vLLM.endpoint
 					: providerName === 'openAICompatible' ? 'https://my-website.com/v1'
 						: providerName === 'lmStudio' ? defaultProviderSettings.lmStudio.endpoint
 							: providerName === 'liteLLM' ? 'http://localhost:4000'
-								: '(never)',
+								: providerName === 'awsBedrock' ? 'http://localhost:4000/v1'
+									: '(never)',
 
 
 		}
 	}
-	// else if (settingName === 'region') {
-	// 	// vertex only
-	// 	return {
-	// 		title: 'Region',
-	// 		placeholder: providerName === 'googleVertex' ? defaultProviderSettings.googleVertex.region
-	// 			: ''
-	// 	}
-	// }
+	else if (settingName === 'headersJSON') {
+		return { title: 'Custom Headers', placeholder: '{ "X-Request-Id": "..." }' }
+	}
+	else if (settingName === 'region') {
+		// vertex only
+		return {
+			title: 'Region',
+			placeholder: providerName === 'googleVertex' ? defaultProviderSettings.googleVertex.region
+				: providerName === 'awsBedrock'
+					? defaultProviderSettings.awsBedrock.region
+					: ''
+		}
+	}
 	else if (settingName === 'azureApiVersion') {
 		// azure only
 		return {
@@ -196,11 +208,11 @@ export const displayInfoOfSettingName = (providerName: ProviderName, settingName
 	else if (settingName === 'project') {
 		return {
 			title: providerName === 'microsoftAzure' ? 'Resource'
-				// : providerName === 'googleVertex' ? 'Project'
-				: '',
+				: providerName === 'googleVertex' ? 'Project'
+					: '',
 			placeholder: providerName === 'microsoftAzure' ? 'my-resource'
-				// : providerName === 'googleVertex' ? 'my-project'
-				: ''
+				: providerName === 'googleVertex' ? 'my-project'
+					: ''
 
 		}
 
@@ -228,9 +240,10 @@ export const displayInfoOfSettingName = (providerName: ProviderName, settingName
 const defaultCustomSettings: Record<CustomSettingName, undefined> = {
 	apiKey: undefined,
 	endpoint: undefined,
-	// region: undefined, // googleVertex
+	region: undefined, // googleVertex
 	project: undefined,
 	azureApiVersion: undefined,
+	headersJSON: undefined,
 }
 
 
@@ -324,16 +337,22 @@ export const defaultSettingsOfProvider: SettingsOfProvider = {
 		...modelInfoOfDefaultModelNames(defaultModelsOfProvider.vLLM),
 		_didFillInProviderSettings: undefined,
 	},
-	// googleVertex: { // aggregator (serves models from multiple providers)
-	// 	...defaultCustomSettings,
-	// 	...defaultProviderSettings.googleVertex,
-	// 	...modelInfoOfDefaultModelNames(defaultModelsOfProvider.googleVertex),
-	// 	_didFillInProviderSettings: undefined,
-	// },
+	googleVertex: { // aggregator (serves models from multiple providers)
+		...defaultCustomSettings,
+		...defaultProviderSettings.googleVertex,
+		...modelInfoOfDefaultModelNames(defaultModelsOfProvider.googleVertex),
+		_didFillInProviderSettings: undefined,
+	},
 	microsoftAzure: { // aggregator (serves models from multiple providers)
 		...defaultCustomSettings,
 		...defaultProviderSettings.microsoftAzure,
 		...modelInfoOfDefaultModelNames(defaultModelsOfProvider.microsoftAzure),
+		_didFillInProviderSettings: undefined,
+	},
+	awsBedrock: { // aggregator (serves models from multiple providers)
+		...defaultCustomSettings,
+		...defaultProviderSettings.awsBedrock,
+		...modelInfoOfDefaultModelNames(defaultModelsOfProvider.awsBedrock),
 		_didFillInProviderSettings: undefined,
 	},
 }
@@ -346,7 +365,7 @@ export const modelSelectionsEqual = (m1: ModelSelection, m2: ModelSelection) => 
 }
 
 // this is a state
-export const featureNames = ['Chat', 'Ctrl+K', 'Autocomplete', 'Apply'] as const
+export const featureNames = ['Chat', 'Ctrl+K', 'Autocomplete', 'Apply', 'SCM'] as const
 export type ModelSelectionOfFeature = Record<(typeof featureNames)[number], ModelSelection | null>
 export type FeatureName = keyof ModelSelectionOfFeature
 
@@ -361,6 +380,9 @@ export const displayInfoOfFeatureName = (featureName: FeatureName) => {
 		return 'Chat'
 	else if (featureName === 'Apply')
 		return 'Apply'
+	// source control:
+	else if (featureName === 'SCM')
+		return 'Commit Message Generator'
 	else
 		throw new Error(`Feature Name ${featureName} not allowed`)
 }
@@ -424,12 +446,15 @@ export type GlobalSettings = {
 	aiInstructions: string;
 	enableAutocomplete: boolean;
 	syncApplyToChat: boolean;
+	syncSCMToChat: boolean;
 	enableFastApply: boolean;
 	chatMode: ChatMode;
 	autoApprove: { [approvalType in ToolApprovalType]?: boolean };
 	showInlineSuggestions: boolean;
 	includeToolLintErrors: boolean;
 	isOnboardingComplete: boolean;
+	disableSystemMessage: boolean;
+	autoAcceptLLMChanges: boolean;
 }
 
 export const defaultGlobalSettings: GlobalSettings = {
@@ -437,12 +462,15 @@ export const defaultGlobalSettings: GlobalSettings = {
 	aiInstructions: '',
 	enableAutocomplete: false,
 	syncApplyToChat: true,
+	syncSCMToChat: true,
 	enableFastApply: true,
 	chatMode: 'agent',
 	autoApprove: {},
 	showInlineSuggestions: true,
 	includeToolLintErrors: true,
 	isOnboardingComplete: false,
+	disableSystemMessage: false,
+	autoAcceptLLMChanges: false,
 }
 
 export type GlobalSettingName = keyof GlobalSettings
@@ -462,13 +490,38 @@ export const globalSettingNames = Object.keys(defaultGlobalSettings) as GlobalSe
 export type ModelSelectionOptions = {
 	reasoningEnabled?: boolean;
 	reasoningBudget?: number;
+	reasoningEffort?: string;
 }
 
 export type OptionsOfModelSelection = {
 	[featureName in FeatureName]: Partial<{
 		[providerName in ProviderName]: {
-			[modelName: string]:
-			ModelSelectionOptions | undefined
+			[modelName: string]: ModelSelectionOptions | undefined
 		}
 	}>
+}
+
+
+
+
+
+export type OverridesOfModel = {
+	[providerName in ProviderName]: {
+		[modelName: string]: Partial<ModelOverrides> | undefined
+	}
+}
+
+
+const overridesOfModel = {} as OverridesOfModel
+for (const providerName of providerNames) { overridesOfModel[providerName] = {} }
+export const defaultOverridesOfModel = overridesOfModel
+
+
+
+export interface MCPUserStateOfName {
+	[serverName: string]: MCPUserState | undefined;
+}
+
+export interface MCPUserState {
+	isOn: boolean;
 }

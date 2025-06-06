@@ -9,11 +9,12 @@ import { marked, MarkedToken, Token } from 'marked'
 import { convertToVscodeLang, detectLanguage } from '../../../../common/helpers/languageHelpers.js'
 import { BlockCodeApplyWrapper } from './ApplyBlockHoverButtons.js'
 import { useAccessor } from '../util/services.js'
-import { ScrollType } from '../../../../../../../editor/common/editorCommon.js'
 import { URI } from '../../../../../../../base/common/uri.js'
 import { isAbsolute } from '../../../../../../../base/common/path.js'
 import { separateOutFirstLine } from '../../../../common/helpers/util.js'
 import { BlockCode } from '../util/inputs.js'
+import { CodespanLocationLink } from '../../../../common/chatThreadServiceTypes.js'
+import { getBasename, getRelative, voidOpenFileFn } from '../sidebar-tsx/SidebarChat.js'
 
 
 export type ChatMessageLocation = {
@@ -88,13 +89,18 @@ const LatexRender = ({ latex }: { latex: string }) => {
 	// }
 }
 
-const Codespan = ({ text, className, onClick }: { text: string, className?: string, onClick?: () => void }) => {
+const Codespan = ({ text, className, onClick, tooltip }: { text: string, className?: string, onClick?: () => void, tooltip?: string }) => {
 
 	// TODO compute this once for efficiency. we should use `labels.ts/shorten` to display duplicates properly
 
 	return <code
 		className={`font-mono font-medium rounded-sm bg-void-bg-1 px-1 ${className}`}
 		onClick={onClick}
+		{...tooltip ? {
+			'data-tooltip-id': 'void-tooltip',
+			'data-tooltip-content': tooltip,
+			'data-tooltip-place': 'top',
+		} : {}}
 	>
 		{text}
 	</code>
@@ -113,54 +119,49 @@ const CodespanWithLink = ({ text, rawText, chatMessageLocation }: { text: string
 
 	const [didComputeCodespanLink, setDidComputeCodespanLink] = useState<boolean>(false)
 
-	let link = undefined
-	if (rawText.endsWith('`')) { // if codespan was completed
+	let link: CodespanLocationLink | undefined = undefined
+	let tooltip: string | undefined = undefined
+	let displayText = text
 
+
+	if (rawText.endsWith('`')) {
 		// get link from cache
 		link = chatThreadService.getCodespanLink({ codespanStr: text, messageIdx, threadId })
 
 		if (link === undefined) {
 			// if no link, generate link and add to cache
-			(chatThreadService.generateCodespanLink({ codespanStr: text, threadId })
+			chatThreadService.generateCodespanLink({ codespanStr: text, threadId })
 				.then(link => {
 					chatThreadService.addCodespanLink({ newLinkText: text, newLinkLocation: link, messageIdx, threadId })
 					setDidComputeCodespanLink(true) // rerender
 				})
-			)
 		}
 
+		if (link?.displayText) {
+			displayText = link.displayText
+		}
+
+		if (isValidUri(displayText)) {
+			tooltip = getRelative(URI.file(displayText), accessor)  // Full path as tooltip
+			displayText = getBasename(displayText)
+		}
 	}
 
 
 	const onClick = () => {
-
 		if (!link) return;
-		const selection = link.selection
-
-		// open the file
-		commandService.executeCommand('vscode.open', link.uri).then(() => {
-
-			// select the text
-			setTimeout(() => {
-				if (!selection) return;
-
-				const editor = editorService.getActiveCodeEditor()
-				if (!editor) return;
-
-				editor.setSelection(selection)
-				editor.revealRange(selection, ScrollType.Immediate)
-
-			}, 50) // needed when document was just opened and needs to initialize
-
-		})
-
+		// Use the updated voidOpenFileFn to open the file and handle selection
+		if (link.selection)
+			voidOpenFileFn(link.uri, accessor, [link.selection.startLineNumber, link.selection.endLineNumber]);
+		else
+			voidOpenFileFn(link.uri, accessor);
 	}
 
 	return <Codespan
-		// text={link?.displayText || text}
-		text={link?.displayText || text}
+		text={displayText}
 		onClick={onClick}
 		className={link ? 'underline hover:brightness-90 transition-all duration-200 cursor-pointer' : ''}
+		tooltip={tooltip || undefined}
 	/>
 }
 
@@ -318,12 +319,12 @@ const RenderToken = ({ token, inPTag, codeURI, chatMessageLocation, tokenIdx, ..
 			return <BlockCodeApplyWrapper
 				canApply={isCodeblockClosed}
 				applyBoxId={applyBoxId}
-				initValue={contents}
+				codeStr={contents}
 				language={language}
 				uri={uri || 'current'}
 			>
 				<BlockCode
-					initValue={contents}
+					initValue={contents.trimEnd()} // \n\n adds a permanent newline which creates a flash
 					language={language}
 				/>
 			</BlockCodeApplyWrapper>
@@ -543,6 +544,7 @@ const RenderToken = ({ token, inPTag, codeURI, chatMessageLocation, tokenIdx, ..
 
 
 export const ChatMarkdownRender = ({ string, inPTag = false, chatMessageLocation, ...options }: { string: string, inPTag?: boolean, codeURI?: URI, chatMessageLocation: ChatMessageLocation | undefined } & RenderTokenOptions) => {
+	string = string.replaceAll('\n•', '\n\n•')
 	const tokens = marked.lexer(string); // https://marked.js.org/using_pro#renderer
 	return (
 		<>

@@ -11,138 +11,6 @@ import { Check, Copy, Icon, LoaderCircle, MessageCircleQuestion, Trash2, UserChe
 import { IsRunningType, ThreadType } from '../../../chatThreadService.js';
 
 
-export const OldSidebarThreadSelector = () => {
-
-
-	const accessor = useAccessor()
-	const sidebarStateService = accessor.get('ISidebarStateService')
-
-	return (
-		<div className="flex p-2 flex-col gap-y-1 max-h-[200px] overflow-y-auto">
-
-			<div className="w-full relative flex justify-center items-center">
-				{/* title */}
-				<h2 className='font-bold text-lg'>{`History`}</h2>
-				{/* X button at top right */}
-				<button
-					type='button'
-					className='absolute top-0 right-0'
-					onClick={() => sidebarStateService.setState({ isHistoryOpen: false })}
-				>
-					<IconX
-						size={16}
-						className="p-[1px] stroke-[2] opacity-80 text-void-fg-3 hover:brightness-95"
-					/>
-				</button>
-			</div>
-
-			{/* a list of all the past threads */}
-			{/* <OldPastThreadsList /> */}
-
-		</div>
-	)
-}
-
-
-
-
-
-
-const truncate = (s: string) => {
-	let len = s.length
-	const TRUNC_AFTER = 16
-	if (len >= TRUNC_AFTER)
-		s = s.substring(0, TRUNC_AFTER) + '...'
-	return s
-}
-
-
-
-const OldPastThreadsList = () => {
-
-	const accessor = useAccessor()
-	const chatThreadsService = accessor.get('IChatThreadService')
-	const sidebarStateService = accessor.get('ISidebarStateService')
-
-	const threadsState = useChatThreadsState()
-	const { allThreads } = threadsState
-
-	// sorted by most recent to least recent
-	const sortedThreadIds = Object.keys(allThreads ?? {})
-		.sort((threadId1, threadId2) => (allThreads[threadId1]?.lastModified ?? 0) > (allThreads[threadId2]?.lastModified ?? 0) ? -1 : 1)
-		.filter(threadId => (allThreads![threadId]?.messages.length ?? 0) !== 0)
-
-
-	return <div className="px-1">
-		<ul className="flex flex-col gap-y-0.5 overflow-y-auto list-disc">
-
-			{sortedThreadIds.length === 0
-
-				? <div key="nothreads" className="text-center text-void-fg-3 brightness-90 text-root">{`There are no chat threads yet.`}</div>
-
-				: sortedThreadIds.map((threadId) => {
-					if (!allThreads) {
-						return <li key="error" className="text-void-warning">{`Error accessing chat history.`}</li>;
-					}
-					const pastThread = allThreads[threadId];
-					if (!pastThread) {
-						return <li key="error" className="text-void-warning">{`Error accessing chat history.`}</li>;
-					}
-
-
-					let firstMsg = null;
-					// let secondMsg = null;
-
-					const firstUserMsgIdx = pastThread.messages.findIndex((msg) => msg.role === 'user');
-
-					if (firstUserMsgIdx !== -1) {
-						// firstMsg = truncate(pastThread.messages[firstMsgIdx].displayContent ?? '');
-						const firsUsertMsgObj = pastThread.messages[firstUserMsgIdx]
-						firstMsg = firsUsertMsgObj.role === 'user' && firsUsertMsgObj.displayContent || '';
-					} else {
-						firstMsg = '""';
-					}
-
-					// const secondMsgIdx = pastThread.messages.findIndex(
-					// 	(msg, i) => msg.role !== 'system' && !!msg.displayContent && i > firstMsgIdx
-					// );
-
-					// if (secondMsgIdx !== -1) {
-					// 	secondMsg = truncate(pastThread.messages[secondMsgIdx].displayContent ?? '');
-					// }
-
-					const numMessages = pastThread.messages.filter((msg) => msg.role === 'assistant' || msg.role === 'user').length;
-
-					return (
-						<li key={pastThread.id}>
-							<button
-								type='button'
-								className={`
-									hover:bg-void-bg-1
-									${threadsState.currentThreadId === pastThread.id ? 'bg-void-bg-1' : ''}
-									rounded-sm px-2 py-1
-									w-full
-									text-left
-									flex items-center
-								`}
-								onClick={() => {
-									chatThreadsService.switchToThread(pastThread.id);
-									sidebarStateService.setState({ isHistoryOpen: false })
-								}}
-								title={new Date(pastThread.lastModified).toLocaleString()}
-							>
-								<div className='truncate'>{`${firstMsg}`}</div>
-								<div>{`\u00A0(${numMessages})`}</div>
-							</button>
-						</li>
-					);
-				})
-			}
-		</ul>
-	</div>
-}
-
-
 const numInitialThreads = 3
 
 export const PastThreadsList = ({ className = '' }: { className?: string }) => {
@@ -176,8 +44,8 @@ export const PastThreadsList = ({ className = '' }: { className?: string }) => {
 
 	return (
 		<div className={`flex flex-col mb-2 gap-2 w-full text-nowrap text-void-fg-3 select-none relative ${className}`}>
-			{displayThreads.length === 0
-				? <></> // No chats yet... Suggestion: Tell me about my codebase Suggestion: Create a new .voidrules file in the root of my repo
+			{displayThreads.length === 0 // this should never happen
+				? <></>
 				: displayThreads.map((threadId, i) => {
 					const pastThread = allThreads[threadId];
 					if (!pastThread) {
@@ -199,7 +67,7 @@ export const PastThreadsList = ({ className = '' }: { className?: string }) => {
 
 			{hasMoreThreads && !showAll && (
 				<div
-					className="text-void-fg-3 opacity-60 hover:opacity-100 hover:brightness-115 cursor-pointer p-1 text-xs"
+					className="text-void-fg-3 opacity-80 hover:opacity-100 hover:brightness-115 cursor-pointer p-1 text-xs"
 					onClick={() => setShowAll(true)}
 				>
 					Show {sortedThreadIds.length - numInitialThreads} more...
@@ -207,7 +75,7 @@ export const PastThreadsList = ({ className = '' }: { className?: string }) => {
 			)}
 			{hasMoreThreads && showAll && (
 				<div
-					className="text-void-fg-3 opacity-60 hover:opacity-100 hover:brightness-115 cursor-pointer p-1 text-xs"
+					className="text-void-fg-3 opacity-80 hover:opacity-100 hover:brightness-115 cursor-pointer p-1 text-xs"
 					onClick={() => setShowAll(false)}
 				>
 					Show less
@@ -313,7 +181,6 @@ const PastThreadElement = ({ pastThread, idx, hoveredIdx, setHoveredIdx, isRunni
 
 	const accessor = useAccessor()
 	const chatThreadsService = accessor.get('IChatThreadService')
-	const sidebarStateService = accessor.get('ISidebarStateService')
 
 	// const settingsState = useSettingsState()
 	// const convertService = accessor.get('IConvertToLLMMessageService')
@@ -353,13 +220,14 @@ const PastThreadElement = ({ pastThread, idx, hoveredIdx, setHoveredIdx, isRunni
 	const numMessages = pastThread.messages.filter((msg) => msg.role === 'assistant' || msg.role === 'user').length;
 
 	const detailsHTML = <span
-		className='gap-1 inline-flex items-center'
 	// data-tooltip-id='void-tooltip'
 	// data-tooltip-content={`Last modified ${formatTime(new Date(pastThread.lastModified))}`}
 	// data-tooltip-place='top'
 	>
-		{/* <span>{numMessages}</span> */}
+		<span className='opacity-60'>{numMessages}</span>
+		{` `}
 		{formatDate(new Date(pastThread.lastModified))}
+		{/* {` messages `} */}
 	</span>
 
 	return <div
@@ -369,7 +237,6 @@ const PastThreadElement = ({ pastThread, idx, hoveredIdx, setHoveredIdx, isRunni
 		`}
 		onClick={() => {
 			chatThreadsService.switchToThread(pastThread.id);
-			sidebarStateService.setState({ isHistoryOpen: false });
 		}}
 		onMouseEnter={() => setHoveredIdx(idx)}
 		onMouseLeave={() => setHoveredIdx(null)}
@@ -377,13 +244,19 @@ const PastThreadElement = ({ pastThread, idx, hoveredIdx, setHoveredIdx, isRunni
 		<div className="flex items-center justify-between gap-1">
 			<span className="flex items-center gap-2 min-w-0 overflow-hidden">
 				{/* spinner */}
-				{isRunning === 'LLM' || isRunning === 'tool' ? <LoaderCircle className="animate-spin bg-void-stroke-1 flex-shrink-0 flex-grow-0" size={14} />
+				{isRunning === 'LLM' || isRunning === 'tool' || isRunning === 'idle' ? <LoaderCircle className="animate-spin bg-void-stroke-1 flex-shrink-0 flex-grow-0" size={14} />
 					:
 					isRunning === 'awaiting_user' ? <MessageCircleQuestion className="bg-void-stroke-1 flex-shrink-0 flex-grow-0" size={14} />
 						:
 						null}
 				{/* name */}
-				<span className="truncate overflow-hidden text-ellipsis">{firstMsg}</span>
+				<span className="truncate overflow-hidden text-ellipsis"
+					data-tooltip-id='void-tooltip'
+					data-tooltip-content={numMessages + ' messages'}
+					data-tooltip-place='top'
+				>{firstMsg}</span>
+
+				{/* <span className='opacity-60'>{`(${numMessages})`}</span> */}
 			</span>
 
 			<div className="flex items-center gap-x-1 opacity-60">

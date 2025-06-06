@@ -11,9 +11,9 @@ import { registerSingleton, InstantiationType } from '../../../../platform/insta
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IMetricsService } from './metricsService.js';
-import { defaultProviderSettings, getModelCapabilities } from './modelCapabilities.js';
+import { defaultProviderSettings, getModelCapabilities, ModelOverrides } from './modelCapabilities.js';
 import { VOID_SETTINGS_STORAGE_KEY } from './storageKeys.js';
-import { defaultSettingsOfProvider, FeatureName, ProviderName, ModelSelectionOfFeature, SettingsOfProvider, SettingName, providerNames, ModelSelection, modelSelectionsEqual, featureNames, VoidStatefulModelInfo, GlobalSettings, GlobalSettingName, defaultGlobalSettings, ModelSelectionOptions, OptionsOfModelSelection, ChatMode } from './voidSettingsTypes.js';
+import { defaultSettingsOfProvider, FeatureName, ProviderName, ModelSelectionOfFeature, SettingsOfProvider, SettingName, providerNames, ModelSelection, modelSelectionsEqual, featureNames, VoidStatefulModelInfo, GlobalSettings, GlobalSettingName, defaultGlobalSettings, ModelSelectionOptions, OptionsOfModelSelection, ChatMode, OverridesOfModel, defaultOverridesOfModel, MCPUserStateOfName as MCPUserStateOfName, MCPUserState } from './voidSettingsTypes.js';
 
 
 // name is the name in the dropdown
@@ -41,7 +41,9 @@ export type VoidSettingsState = {
 	readonly settingsOfProvider: SettingsOfProvider; // optionsOfProvider
 	readonly modelSelectionOfFeature: ModelSelectionOfFeature; // stateOfFeature
 	readonly optionsOfModelSelection: OptionsOfModelSelection;
+	readonly overridesOfModel: OverridesOfModel;
 	readonly globalSettings: GlobalSettings;
+	readonly mcpUserStateOfName: MCPUserStateOfName; // user-controlled state of MCP servers
 
 	readonly _modelOptions: ModelOption[] // computed based on the two above items
 }
@@ -61,6 +63,10 @@ export interface IVoidSettingsService {
 	setModelSelectionOfFeature: SetModelSelectionOfFeatureFn;
 	setOptionsOfModelSelection: SetOptionsOfModelSelection;
 	setGlobalSetting: SetGlobalSettingFn;
+	// setMCPServerStates: (newStates: MCPServerStates) => Promise<void>;
+
+	// setting to undefined CLEARS it, unlike others:
+	setOverridesOfModel(providerName: ProviderName, modelName: string, overrides: Partial<ModelOverrides> | undefined): Promise<void>;
 
 	dangerousSetState(newState: VoidSettingsState): Promise<void>;
 	resetState(): Promise<void>;
@@ -69,6 +75,10 @@ export interface IVoidSettingsService {
 	toggleModelHidden(providerName: ProviderName, modelName: string): void;
 	addModel(providerName: ProviderName, modelName: string): void;
 	deleteModel(providerName: ProviderName, modelName: string): boolean;
+
+	addMCPUserStateOfNames(userStateOfName: MCPUserStateOfName): Promise<void>;
+	removeMCPUserStateOfNames(serverNames: string[]): Promise<void>;
+	setMCPServerState(serverName: string, state: MCPUserState): Promise<void>;
 }
 
 
@@ -94,11 +104,19 @@ const _modelsWithSwappedInNewModels = (options: { existingModels: VoidStatefulMo
 }
 
 
-export const modelFilterOfFeatureName: { [featureName in FeatureName]: { filter: (o: ModelSelection, opts: { chatMode: ChatMode }) => boolean; emptyMessage: null | { message: string, priority: 'always' | 'fallback' } } } = {
-	'Autocomplete': { filter: (o) => getModelCapabilities(o.providerName, o.modelName).supportsFIM, emptyMessage: { message: 'No models support FIM', priority: 'always' } },
+export const modelFilterOfFeatureName: {
+	[featureName in FeatureName]: {
+		filter: (
+			o: ModelSelection,
+			opts: { chatMode: ChatMode, overridesOfModel: OverridesOfModel }
+		) => boolean;
+		emptyMessage: null | { message: string, priority: 'always' | 'fallback' }
+	} } = {
+	'Autocomplete': { filter: (o, opts) => getModelCapabilities(o.providerName, o.modelName, opts.overridesOfModel).supportsFIM, emptyMessage: { message: 'No models support FIM', priority: 'always' } },
 	'Chat': { filter: o => true, emptyMessage: null, },
 	'Ctrl+K': { filter: o => true, emptyMessage: null, },
 	'Apply': { filter: o => true, emptyMessage: null, },
+	'SCM': { filter: o => true, emptyMessage: null, },
 }
 
 
@@ -163,7 +181,7 @@ const _validatedModelState = (state: Omit<VoidSettingsState, '_modelOptions'>): 
 	for (const featureName of featureNames) {
 
 		const { filter } = modelFilterOfFeatureName[featureName]
-		const filterOpts = { chatMode: state.globalSettings.chatMode }
+		const filterOpts = { chatMode: state.globalSettings.chatMode, overridesOfModel: state.overridesOfModel }
 		const modelOptionsForThisFeature = newModelOptions.filter((o) => filter(o.selection, filterOpts))
 
 		const modelSelectionAtFeature = newModelSelectionOfFeature[featureName]
@@ -182,6 +200,7 @@ const _validatedModelState = (state: Omit<VoidSettingsState, '_modelOptions'>): 
 		...state,
 		settingsOfProvider: newSettingsOfProvider,
 		modelSelectionOfFeature: newModelSelectionOfFeature,
+		overridesOfModel: state.overridesOfModel,
 		_modelOptions: newModelOptions,
 	} satisfies VoidSettingsState
 
@@ -195,10 +214,12 @@ const _validatedModelState = (state: Omit<VoidSettingsState, '_modelOptions'>): 
 const defaultState = () => {
 	const d: VoidSettingsState = {
 		settingsOfProvider: deepClone(defaultSettingsOfProvider),
-		modelSelectionOfFeature: { 'Chat': null, 'Ctrl+K': null, 'Autocomplete': null, 'Apply': null },
+		modelSelectionOfFeature: { 'Chat': null, 'Ctrl+K': null, 'Autocomplete': null, 'Apply': null, 'SCM': null },
 		globalSettings: deepClone(defaultGlobalSettings),
-		optionsOfModelSelection: { 'Chat': {}, 'Ctrl+K': {}, 'Autocomplete': {}, 'Apply': {} },
+		optionsOfModelSelection: { 'Chat': {}, 'Ctrl+K': {}, 'Autocomplete': {}, 'Apply': {}, 'SCM': {} },
+		overridesOfModel: deepClone(defaultOverridesOfModel),
 		_modelOptions: [], // computed later
+		mcpUserStateOfName: {},
 	}
 	return d
 }
@@ -242,6 +263,7 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 		await this._storeState()
 		this._onDidChangeState.fire()
 		this._onUpdate_syncApplyToChat()
+		this._onUpdate_syncSCMToChat()
 	}
 	async resetState() {
 		await this.dangerousSetState(defaultState())
@@ -259,6 +281,17 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 
 			// autoapprove is now an obj not a boolean (1.2.5)
 			if (typeof readS.globalSettings.autoApprove === 'boolean') readS.globalSettings.autoApprove = {}
+
+			// 1.3.5 add source control feature
+			if (readS.modelSelectionOfFeature && !readS.modelSelectionOfFeature['SCM']) {
+				readS.modelSelectionOfFeature['SCM'] = deepClone(readS.modelSelectionOfFeature['Chat'])
+				readS.optionsOfModelSelection['SCM'] = deepClone(readS.optionsOfModelSelection['Chat'])
+			}
+			// add disableSystemMessage feature
+			if (readS.globalSettings.disableSystemMessage === undefined) readS.globalSettings.disableSystemMessage = false;
+			
+			// add autoAcceptLLMChanges feature
+			if (readS.globalSettings.autoAcceptLLMChanges === undefined) readS.globalSettings.autoAcceptLLMChanges = false;
 		}
 		catch (e) {
 			readS = defaultState()
@@ -267,9 +300,11 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 		// the stored data structure might be outdated, so we need to update it here
 		try {
 			readS = {
+				...defaultState(),
 				...readS,
-				...defaultSettingsOfProvider,
-				...readS.settingsOfProvider,
+				// no idea why this was here, seems like a bug
+				// ...defaultSettingsOfProvider,
+				// ...readS.settingsOfProvider,
 			}
 
 			for (const providerName of providerNames) {
@@ -288,6 +323,11 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 							m.type = 'default'
 						else m.type = 'custom'
 					}
+				}
+
+				// remove when enough people have had it run (default is now {})
+				if (providerName === 'openAICompatible' && !readS.settingsOfProvider[providerName].headersJSON) {
+					readS.settingsOfProvider[providerName].headersJSON = '{}'
 				}
 			}
 		}
@@ -314,7 +354,8 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 			return defaultState()
 
 		const stateStr = await this._encryptionService.decrypt(encryptedState)
-		return JSON.parse(stateStr)
+		const state = JSON.parse(stateStr)
+		return state
 	}
 
 
@@ -339,12 +380,16 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 		}
 
 		const newGlobalSettings = this.state.globalSettings
+		const newOverridesOfModel = this.state.overridesOfModel
+		const newMCPUserStateOfName = this.state.mcpUserStateOfName
 
 		const newState = {
 			modelSelectionOfFeature: newModelSelectionOfFeature,
 			optionsOfModelSelection: newOptionsOfModelSelection,
 			settingsOfProvider: newSettingsOfProvider,
 			globalSettings: newGlobalSettings,
+			overridesOfModel: newOverridesOfModel,
+			mcpUserStateOfName: newMCPUserStateOfName,
 		}
 
 		this.state = _validatedModelState(newState)
@@ -358,7 +403,10 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 	private _onUpdate_syncApplyToChat() {
 		// if sync is turned on, sync (call this whenever Chat model or !!sync changes)
 		this.setModelSelectionOfFeature('Apply', deepClone(this.state.modelSelectionOfFeature['Chat']))
+	}
 
+	private _onUpdate_syncSCMToChat() {
+		this.setModelSelectionOfFeature('SCM', deepClone(this.state.modelSelectionOfFeature['Chat']))
 	}
 
 	setGlobalSetting: SetGlobalSettingFn = async (settingName, newVal) => {
@@ -375,6 +423,8 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 
 		// hooks
 		if (this.state.globalSettings.syncApplyToChat) this._onUpdate_syncApplyToChat()
+		if (this.state.globalSettings.syncSCMToChat) this._onUpdate_syncSCMToChat()
+
 	}
 
 
@@ -394,7 +444,9 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 
 		// hooks
 		if (featureName === 'Chat') {
-			if (this.state.globalSettings.syncApplyToChat) this._onUpdate_syncApplyToChat()
+			// When Chat model changes, update synced features
+			this._onUpdate_syncApplyToChat()
+			this._onUpdate_syncSCMToChat()
 		}
 	}
 
@@ -420,6 +472,28 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 
 		await this._storeState()
 		this._onDidChangeState.fire()
+	}
+
+	setOverridesOfModel = async (providerName: ProviderName, modelName: string, overrides: Partial<ModelOverrides> | undefined) => {
+		const newState: VoidSettingsState = {
+			...this.state,
+			overridesOfModel: {
+				...this.state.overridesOfModel,
+				[providerName]: {
+					...this.state.overridesOfModel[providerName],
+					[modelName]: overrides === undefined ? undefined : {
+						...this.state.overridesOfModel[providerName][modelName],
+						...overrides
+					},
+				}
+			}
+		};
+
+		this.state = _validatedModelState(newState);
+		await this._storeState();
+		this._onDidChangeState.fire();
+
+		this._metricsService.capture('Update Model Overrides', { providerName, modelName, overrides });
 	}
 
 
@@ -484,6 +558,55 @@ class VoidSettingsService extends Disposable implements IVoidSettingsService {
 		this._metricsService.capture('Delete Model', { providerName, modelName })
 
 		return true
+	}
+
+	// MCP Server State
+	private _setMCPUserStateOfName = async (newStates: MCPUserStateOfName) => {
+		const newState: VoidSettingsState = {
+			...this.state,
+			mcpUserStateOfName: {
+				...this.state.mcpUserStateOfName,
+				...newStates
+			}
+		};
+		this.state = _validatedModelState(newState);
+		await this._storeState();
+		this._onDidChangeState.fire();
+		this._metricsService.capture('Set MCP Server States', { newStates });
+	}
+
+	addMCPUserStateOfNames = async (newMCPStates: MCPUserStateOfName) => {
+		const { mcpUserStateOfName: mcpServerStates } = this.state
+		const newMCPServerStates = {
+			...mcpServerStates,
+			...newMCPStates,
+		}
+		await this._setMCPUserStateOfName(newMCPServerStates)
+		this._metricsService.capture('Add MCP Servers', { servers: Object.keys(newMCPStates).join(', ') });
+	}
+
+	removeMCPUserStateOfNames = async (serverNames: string[]) => {
+		const { mcpUserStateOfName: mcpServerStates } = this.state
+		const newMCPServerStates = {
+			...mcpServerStates,
+		}
+		serverNames.forEach(serverName => {
+			if (serverName in newMCPServerStates) {
+				delete newMCPServerStates[serverName]
+			}
+		})
+		await this._setMCPUserStateOfName(newMCPServerStates)
+		this._metricsService.capture('Remove MCP Servers', { servers: serverNames.join(', ') });
+	}
+
+	setMCPServerState = async (serverName: string, state: MCPUserState) => {
+		const { mcpUserStateOfName } = this.state
+		const newMCPServerStates = {
+			...mcpUserStateOfName,
+			[serverName]: state,
+		}
+		await this._setMCPUserStateOfName(newMCPServerStates)
+		this._metricsService.capture('Update MCP Server State', { serverName, state });
 	}
 
 }

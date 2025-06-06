@@ -3,14 +3,14 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { useState, useEffect, useCallback } from 'react'
-import { useAccessor, useCommandBarState, useCommandBarURIListener, useSettingsState } from '../util/services.js'
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
+import { useAccessor, useChatThreadsState, useChatThreadsStreamState, useCommandBarState, useCommandBarURIListener, useSettingsState } from '../util/services.js'
 import { usePromise, useRefState } from '../util/helpers.js'
 import { isFeatureNameDisabled } from '../../../../common/voidSettingsTypes.js'
 import { URI } from '../../../../../../../base/common/uri.js'
 import { FileSymlink, LucideIcon, RotateCw, Terminal } from 'lucide-react'
 import { Check, X, Square, Copy, Play, } from 'lucide-react'
-import { getBasename, ListableToolItem, ToolChildrenWrapper } from '../sidebar-tsx/SidebarChat.js'
+import { getBasename, ListableToolItem, voidOpenFileFn, ToolChildrenWrapper } from '../sidebar-tsx/SidebarChat.js'
 import { PlacesType, VariantType } from 'react-tooltip'
 
 enum CopyButtonText {
@@ -24,8 +24,9 @@ type IconButtonProps = {
 	Icon: LucideIcon
 }
 
-export const IconShell1 = ({ onClick, Icon, disabled, className, ...props }: IconButtonProps & React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-	<button
+export const IconShell1 = ({ onClick, Icon, disabled, className, ...props }: IconButtonProps & React.ButtonHTMLAttributes<HTMLButtonElement>) => {
+
+	return <button
 		disabled={disabled}
 		onClick={(e) => {
 			e.preventDefault();
@@ -34,19 +35,19 @@ export const IconShell1 = ({ onClick, Icon, disabled, className, ...props }: Ico
 		}}
 		// border border-void-border-1 rounded
 		className={`
-            size-[18px]
-			p-[2px]
-            flex items-center justify-center
-            text-sm text-void-fg-3
-            hover:brightness-110
-            disabled:opacity-50 disabled:cursor-not-allowed
-			${className}
+		size-[18px]
+		p-[2px]
+		flex items-center justify-center
+		text-sm text-void-fg-3
+		hover:brightness-110
+		disabled:opacity-50 disabled:cursor-not-allowed
+		${className}
         `}
 		{...props}
 	>
 		<Icon />
 	</button>
-)
+}
 
 
 // export const IconShell2 = ({ onClick, title, Icon, disabled, className }: IconButtonProps) => (
@@ -108,7 +109,7 @@ export const JumpToFileButton = ({ uri, ...props }: { uri: URI | 'current' } & R
 		<IconShell1
 			Icon={FileSymlink}
 			onClick={() => {
-				commandService.executeCommand('vscode.open', uri, { preview: true })
+				voidOpenFileFn(uri, accessor)
 			}}
 			{...tooltipPropsForApplyBlock({ tooltipName: 'Go to file' })}
 			{...props}
@@ -131,22 +132,16 @@ export const JumpToTerminalButton = ({ onClick }: { onClick: () => void }) => {
 
 // state persisted for duration of react only
 // TODO change this to use type `ChatThreads.applyBoxState[applyBoxId]`
-const applyingURIOfApplyBoxIdRef: { current: { [applyBoxId: string]: URI | undefined } } = { current: {} }
+const _applyingURIOfApplyBoxIdRef: { current: { [applyBoxId: string]: URI | undefined } } = { current: {} }
 
 const getUriBeingApplied = (applyBoxId: string) => {
-	return applyingURIOfApplyBoxIdRef.current[applyBoxId] ?? null
+	return _applyingURIOfApplyBoxIdRef.current[applyBoxId] ?? null
 }
 
 
-export const useApplyButtonState = ({ applyBoxId, uri }: { applyBoxId: string, uri: URI | 'current' }) => {
-
-	const settingsState = useSettingsState()
-	const isDisabled = !!isFeatureNameDisabled('Apply', settingsState) || !applyBoxId
-
+export const useApplyStreamState = ({ applyBoxId }: { applyBoxId: string }) => {
 	const accessor = useAccessor()
 	const voidCommandBarService = accessor.get('IVoidCommandBarService')
-
-	const [_, rerender] = useState(0)
 
 	const getStreamState = useCallback(() => {
 		const uri = getUriBeingApplied(applyBoxId)
@@ -154,25 +149,24 @@ export const useApplyButtonState = ({ applyBoxId, uri }: { applyBoxId: string, u
 		return voidCommandBarService.getStreamState(uri)
 	}, [voidCommandBarService, applyBoxId])
 
+
+	const [currStreamStateRef, setStreamState] = useRefState(getStreamState())
+
+	const setApplying = useCallback((uri: URI | undefined) => {
+		_applyingURIOfApplyBoxIdRef.current[applyBoxId] = uri ?? undefined
+		setStreamState(getStreamState())
+	}, [setStreamState, getStreamState, applyBoxId])
+
 	// listen for stream updates on this box
 	useCommandBarURIListener(useCallback((uri_) => {
-		const shouldUpdate = (
-			getUriBeingApplied(applyBoxId)?.fsPath === uri_.fsPath
-			|| (uri !== 'current' && uri.fsPath === uri_.fsPath)
-		)
-		if (shouldUpdate) {
-			rerender(c => c + 1)
+		const uri = getUriBeingApplied(applyBoxId)
+		if (uri?.fsPath === uri_.fsPath) {
+			setStreamState(getStreamState())
 		}
-	}, [applyBoxId, uri]))
-
-	const currStreamState = getStreamState()
+	}, [setStreamState, applyBoxId, getStreamState]))
 
 
-	return {
-		getStreamState,
-		isDisabled,
-		currStreamState,
-	}
+	return { currStreamStateRef, setApplying }
 }
 
 
@@ -183,7 +177,7 @@ export const StatusIndicator = ({ indicatorColor, title, className, ...props }: 
 			{title && <span className='opacity-80'>{title}</span>}
 			<div
 				className={` size-1.5 rounded-full border
-					${indicatorColor === 'dark' ? 'bg-void-bg-3 border-void-border-1' :
+					${indicatorColor === 'dark' ? 'bg-[rgba(0,0,0,0)] border-void-border-1' :
 						indicatorColor === 'orange' ? 'bg-orange-500 border-orange-500 shadow-[0_0_4px_0px_rgba(234,88,12,0.6)]' :
 							indicatorColor === 'green' ? 'bg-green-500 border-green-500 shadow-[0_0_4px_0px_rgba(22,163,74,0.6)]' :
 								indicatorColor === 'yellow' ? 'bg-yellow-500 border-yellow-500 shadow-[0_0_4px_0px_rgba(22,163,74,0.6)]' :
@@ -202,10 +196,24 @@ const tooltipPropsForApplyBlock = ({ tooltipName, color = undefined, position = 
 	'data-tooltip-offset': offset,
 })
 
+export const useEditToolStreamState = ({ applyBoxId, uri }: { applyBoxId: string, uri: URI }) => {
+	const accessor = useAccessor()
+	const voidCommandBarService = accessor.get('IVoidCommandBarService')
+	const [streamState, setStreamState] = useState(voidCommandBarService.getStreamState(uri))
+	// listen for stream updates on this box
+	useCommandBarURIListener(useCallback((uri_) => {
+		const shouldUpdate = uri.fsPath === uri_.fsPath
+		if (shouldUpdate) { setStreamState(voidCommandBarService.getStreamState(uri)) }
+	}, [voidCommandBarService, applyBoxId, uri]))
+
+	return { streamState, }
+}
 
 export const StatusIndicatorForApplyButton = ({ applyBoxId, uri }: { applyBoxId: string, uri: URI | 'current' } & React.HTMLAttributes<HTMLDivElement>) => {
 
-	const { currStreamState } = useApplyButtonState({ applyBoxId, uri })
+	const { currStreamStateRef } = useApplyStreamState({ applyBoxId })
+	const currStreamState = currStreamStateRef.current
+
 
 	const color = (
 		currStreamState === 'idle-no-changes' ? 'dark' :
@@ -231,93 +239,256 @@ export const StatusIndicatorForApplyButton = ({ applyBoxId, uri }: { applyBoxId:
 }
 
 
-export const ApplyButtonsHTML = ({ codeStr, applyBoxId, reapplyIcon, uri }: { codeStr: string, applyBoxId: string, reapplyIcon: boolean, uri: URI | 'current' }) => {
+const terminalLanguages = new Set([
+	'bash',
+	'shellscript',
+	'shell',
+	'powershell',
+	'bat',
+	'zsh',
+	'sh',
+	'fish',
+	'nushell',
+	'ksh',
+	'xonsh',
+	'elvish',
+])
+
+const ApplyButtonsForTerminal = ({
+	codeStr,
+	applyBoxId,
+	uri,
+	language,
+}: {
+	codeStr: string,
+	applyBoxId: string,
+	language?: string,
+	uri: URI | 'current';
+}) => {
+	const accessor = useAccessor()
+	const metricsService = accessor.get('IMetricsService')
+	const terminalToolService = accessor.get('ITerminalToolService')
+
+	const settingsState = useSettingsState()
+
+	const [isShellRunning, setIsShellRunning] = useState<boolean>(false)
+	const interruptToolRef = useRef<(() => void) | null>(null)
+	const isDisabled = isShellRunning
+
+	const onClickSubmit = useCallback(async () => {
+		if (isShellRunning) return
+		try {
+			setIsShellRunning(true)
+			const terminalId = await terminalToolService.createPersistentTerminal({ cwd: null })
+			const { interrupt } = await terminalToolService.runCommand(
+				codeStr,
+				{ type: 'persistent', persistentTerminalId: terminalId }
+			);
+			interruptToolRef.current = interrupt
+			metricsService.capture('Execute Shell', { length: codeStr.length })
+		} catch (e) {
+			setIsShellRunning(false)
+			console.error('Failed to execute in terminal:', e)
+		}
+	}, [codeStr, uri, applyBoxId, metricsService, terminalToolService, isShellRunning])
+
+	if (isShellRunning) {
+		return (
+			<IconShell1
+				Icon={X}
+				onClick={() => {
+					interruptToolRef.current?.();
+					setIsShellRunning(false);
+				}}
+				{...tooltipPropsForApplyBlock({ tooltipName: 'Stop' })}
+			/>
+		);
+	}
+	if (isDisabled) {
+		return null
+	}
+	return <IconShell1
+		Icon={Play}
+		onClick={onClickSubmit}
+		{...tooltipPropsForApplyBlock({ tooltipName: 'Apply' })}
+	/>
+}
+
+
+
+const ApplyButtonsForEdit = ({
+	codeStr,
+	applyBoxId,
+	uri,
+	language,
+}: {
+	codeStr: string,
+	applyBoxId: string,
+	language?: string,
+	uri: URI | 'current';
+}) => {
 	const accessor = useAccessor()
 	const editCodeService = accessor.get('IEditCodeService')
 	const metricsService = accessor.get('IMetricsService')
+	const notificationService = accessor.get('INotificationService')
 
-	const {
-		currStreamState,
-		isDisabled,
-		getStreamState,
-	} = useApplyButtonState({ applyBoxId, uri })
+	const settingsState = useSettingsState()
+	const isDisabled = !!isFeatureNameDisabled('Apply', settingsState) || !applyBoxId
+
+	const { currStreamStateRef, setApplying } = useApplyStreamState({ applyBoxId })
 
 	const onClickSubmit = useCallback(async () => {
-		if (isDisabled) return
-		if (getStreamState() === 'streaming') return
-		const opts = {
+		if (currStreamStateRef.current === 'streaming') return
+
+		await editCodeService.callBeforeApplyOrEdit(uri)
+
+		const [newApplyingUri, applyDonePromise] = editCodeService.startApplying({
 			from: 'ClickApply',
 			applyStr: codeStr,
 			uri: uri,
 			startBehavior: 'reject-conflicts',
-		} as const
+		}) ?? []
+		setApplying(newApplyingUri)
 
-		await editCodeService.callBeforeStartApplying(opts)
-		const [newApplyingUri, applyDonePromise] = editCodeService.startApplying(opts) ?? []
+		if (!applyDonePromise) {
+			notificationService.info(`Void Error: We couldn't run Apply here. ${uri === 'current' ? 'This Apply block wants to run on the current file, but you might not have a file open.' : `This Apply block wants to run on ${uri.fsPath}, but it might not exist.`}`)
+		}
 
 		// catch any errors by interrupting the stream
 		applyDonePromise?.catch(e => {
 			const uri = getUriBeingApplied(applyBoxId)
 			if (uri) editCodeService.interruptURIStreaming({ uri: uri })
+			notificationService.info(`Void Error: There was a problem running Apply: ${e}.`)
+
 		})
-
-		applyingURIOfApplyBoxIdRef.current[applyBoxId] = newApplyingUri ?? undefined
-
-		// rerender(c => c + 1)
 		metricsService.capture('Apply Code', { length: codeStr.length }) // capture the length only
-	}, [isDisabled, getStreamState, editCodeService, codeStr, uri, applyBoxId, metricsService])
+
+	}, [setApplying, currStreamStateRef, editCodeService, codeStr, uri, applyBoxId, metricsService, notificationService])
 
 
-	const onInterrupt = useCallback(() => {
-		if (getStreamState() !== 'streaming') return
+	const onClickStop = useCallback(() => {
+		if (currStreamStateRef.current !== 'streaming') return
 		const uri = getUriBeingApplied(applyBoxId)
 		if (!uri) return
 
 		editCodeService.interruptURIStreaming({ uri })
 		metricsService.capture('Stop Apply', {})
-	}, [getStreamState, applyBoxId, editCodeService, metricsService])
+	}, [currStreamStateRef, applyBoxId, editCodeService, metricsService])
 
 	const onAccept = useCallback(() => {
 		const uri = getUriBeingApplied(applyBoxId)
-		if (uri) editCodeService.acceptOrRejectAllDiffAreas({ uri, behavior: 'accept', removeCtrlKs: false })
-	}, [applyBoxId, editCodeService])
+		if (uri) editCodeService.acceptOrRejectAllDiffAreas({ uri: uri, behavior: 'accept', removeCtrlKs: false })
+	}, [uri, applyBoxId, editCodeService])
 
 	const onReject = useCallback(() => {
 		const uri = getUriBeingApplied(applyBoxId)
-		if (uri) editCodeService.acceptOrRejectAllDiffAreas({ uri, behavior: 'reject', removeCtrlKs: false })
-	}, [applyBoxId, editCodeService])
+		if (uri) editCodeService.acceptOrRejectAllDiffAreas({ uri: uri, behavior: 'reject', removeCtrlKs: false })
+	}, [uri, applyBoxId, editCodeService])
 
-	// const onReapply = useCallback(() => {
-	// 	onReject()
-	// 	onClickSubmit()
-	// }, [onReject, onClickSubmit])
-
-
+	const currStreamState = currStreamStateRef.current
 	if (currStreamState === 'streaming') {
 		return <IconShell1
-
 			Icon={Square}
-			onClick={onInterrupt}
-
+			onClick={onClickStop}
 			{...tooltipPropsForApplyBlock({ tooltipName: 'Stop' })}
 		/>
 	}
-
+	if (isDisabled) {
+		return null
+	}
 	if (currStreamState === 'idle-no-changes') {
-
 		return <IconShell1
-			Icon={reapplyIcon ? RotateCw : Play}
+			Icon={Play}
 			onClick={onClickSubmit}
-			{...tooltipPropsForApplyBlock({ tooltipName: reapplyIcon ? 'Reapply' : 'Apply' })}
+			{...tooltipPropsForApplyBlock({ tooltipName: 'Apply' })}
 		/>
 	}
-
 	if (currStreamState === 'idle-has-changes') {
+		return <Fragment>
+			<IconShell1
+				Icon={X}
+				onClick={onReject}
+				{...tooltipPropsForApplyBlock({ tooltipName: 'Remove' })}
+			/>
+			<IconShell1
+				Icon={Check}
+				onClick={onAccept}
+				{...tooltipPropsForApplyBlock({ tooltipName: 'Keep' })}
+			/>
+		</Fragment>
+	}
+}
+
+
+
+
+
+export const ApplyButtonsHTML = (params: {
+	codeStr: string,
+	applyBoxId: string,
+	language?: string,
+	uri: URI | 'current';
+}) => {
+	const { language } = params
+	const isShellLanguage = !!language && terminalLanguages.has(language)
+
+	if (isShellLanguage) {
+		return <ApplyButtonsForTerminal {...params} />
+	}
+	else {
+		return <ApplyButtonsForEdit {...params} />
+	}
+}
+
+
+
+
+
+export const EditToolAcceptRejectButtonsHTML = ({
+	codeStr,
+	applyBoxId,
+	uri,
+	type,
+	threadId,
+}: {
+	codeStr: string,
+	applyBoxId: string,
+} & ({
+	uri: URI,
+	type: 'edit_file' | 'rewrite_file',
+	threadId: string,
+})
+) => {
+	const accessor = useAccessor()
+	const editCodeService = accessor.get('IEditCodeService')
+	const metricsService = accessor.get('IMetricsService')
+
+	const { streamState } = useEditToolStreamState({ applyBoxId, uri })
+	const settingsState = useSettingsState()
+
+	const chatThreadsStreamState = useChatThreadsStreamState(threadId)
+	const isRunning = chatThreadsStreamState?.isRunning
+
+	const isDisabled = !!isFeatureNameDisabled('Chat', settingsState) || !applyBoxId
+
+	const onAccept = useCallback(() => {
+		editCodeService.acceptOrRejectAllDiffAreas({ uri, behavior: 'accept', removeCtrlKs: false })
+	}, [uri, applyBoxId, editCodeService])
+
+	const onReject = useCallback(() => {
+		editCodeService.acceptOrRejectAllDiffAreas({ uri, behavior: 'reject', removeCtrlKs: false })
+	}, [uri, applyBoxId, editCodeService])
+
+	if (isDisabled) return null
+
+	if (streamState === 'idle-no-changes') {
+		return null
+	}
+
+	if (streamState === 'idle-has-changes') {
+		if (isRunning === 'LLM' || isRunning === 'tool') return null
+
 		return <>
-			{/* <IconShell1
-				Icon={RotateCw}
-				onClick={onReapply}
-			/> */}
 			<IconShell1
 				Icon={X}
 				onClick={onReject}
@@ -335,13 +506,13 @@ export const ApplyButtonsHTML = ({ codeStr, applyBoxId, reapplyIcon, uri }: { co
 
 export const BlockCodeApplyWrapper = ({
 	children,
-	initValue,
+	codeStr,
 	applyBoxId,
 	language,
 	canApply,
 	uri,
 }: {
-	initValue: string;
+	codeStr: string;
 	children: React.ReactNode;
 	applyBoxId: string;
 	canApply: boolean;
@@ -350,7 +521,8 @@ export const BlockCodeApplyWrapper = ({
 }) => {
 	const accessor = useAccessor()
 	const commandService = accessor.get('ICommandService')
-	const { currStreamState } = useApplyButtonState({ applyBoxId, uri })
+	const { currStreamStateRef } = useApplyStreamState({ applyBoxId })
+	const currStreamState = currStreamStateRef.current
 
 
 	const name = uri !== 'current' ?
@@ -358,7 +530,7 @@ export const BlockCodeApplyWrapper = ({
 			name={<span className='not-italic'>{getBasename(uri.fsPath)}</span>}
 			isSmall={true}
 			showDot={false}
-			onClick={() => { commandService.executeCommand('vscode.open', uri, { preview: true }) }}
+			onClick={() => { voidOpenFileFn(uri, accessor) }}
 		/>
 		: <span>{language}</span>
 
@@ -374,8 +546,8 @@ export const BlockCodeApplyWrapper = ({
 			</div>
 			<div className={`${canApply ? '' : 'hidden'} flex items-center gap-1`}>
 				<JumpToFileButton uri={uri} />
-				{currStreamState === 'idle-no-changes' && <CopyButton codeStr={initValue} toolTipName='Copy' />}
-				<ApplyButtonsHTML uri={uri} applyBoxId={applyBoxId} codeStr={initValue} reapplyIcon={false} />
+				{currStreamState === 'idle-no-changes' && <CopyButton codeStr={codeStr} toolTipName='Copy' />}
+				<ApplyButtonsHTML uri={uri} applyBoxId={applyBoxId} codeStr={codeStr} language={language} />
 			</div>
 		</div>
 

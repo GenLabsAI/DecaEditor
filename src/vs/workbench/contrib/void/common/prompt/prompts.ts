@@ -3,12 +3,13 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { EndOfLinePreference } from '../../../../../editor/common/model.js';
+import { URI } from '../../../../../base/common/uri.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IDirectoryStrService } from '../directoryStrService.js';
 import { StagingSelectionItem } from '../chatThreadServiceTypes.js';
 import { os } from '../helpers/systemInfo.js';
 import { RawToolParamsObj } from '../sendLLMMessageTypes.js';
-import { approvalTypeOfToolName, ToolResultType } from '../toolsServiceTypes.js';
-import { IVoidModelService } from '../voidModelService.js';
+import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, BuiltinToolName, BuiltinToolResultType, ToolName } from '../toolsServiceTypes.js';
 import { ChatMode } from '../voidSettingsTypes.js';
 
 // Triple backtick wrapper used throughout the prompts for code blocks
@@ -34,24 +35,108 @@ export const MAX_TERMINAL_BG_COMMAND_TIME = 5
 export const MAX_PREFIX_SUFFIX_CHARS = 20_000
 
 
+export const ORIGINAL = `<<<<<<< ORIGINAL`
+export const DIVIDER = `=======`
+export const FINAL = `>>>>>>> UPDATED`
+
+
+
+const searchReplaceBlockTemplate = `\
+${ORIGINAL}
+// ... original code goes here
+${DIVIDER}
+// ... final code goes here
+${FINAL}
+
+${ORIGINAL}
+// ... original code goes here
+${DIVIDER}
+// ... final code goes here
+${FINAL}`
+
+
+
+
+const createSearchReplaceBlocks_systemMessage = `\
+You are a coding assistant that takes in a diff, and outputs SEARCH/REPLACE code blocks to implement the change(s) in the diff.
+The diff will be labeled \`DIFF\` and the original file will be labeled \`ORIGINAL_FILE\`.
+
+Format your SEARCH/REPLACE blocks as follows:
+${tripleTick[0]}
+${searchReplaceBlockTemplate}
+${tripleTick[1]}
+
+1. Your SEARCH/REPLACE block(s) must implement the diff EXACTLY. Do NOT leave anything out.
+
+2. You are allowed to output multiple SEARCH/REPLACE blocks to implement the change.
+
+3. Assume any comments in the diff are PART OF THE CHANGE. Include them in the output.
+
+4. Your output should consist ONLY of SEARCH/REPLACE blocks. Do NOT output any text or explanations before or after this.
+
+5. The ORIGINAL code in each SEARCH/REPLACE block must EXACTLY match lines in the original file. Do not add or remove any whitespace, comments, or modifications from the original code.
+
+6. Each ORIGINAL text must be large enough to uniquely identify the change in the file. However, bias towards writing as little as possible.
+
+7. Each ORIGINAL text must be DISJOINT from all other ORIGINAL text.
+
+## EXAMPLE 1
+DIFF
+${tripleTick[0]}
+// ... existing code
+let x = 6.5
+// ... existing code
+${tripleTick[1]}
+
+ORIGINAL_FILE
+${tripleTick[0]}
+let w = 5
+let x = 6
+let y = 7
+let z = 8
+${tripleTick[1]}
+
+ACCEPTED OUTPUT
+${tripleTick[0]}
+${ORIGINAL}
+let x = 6
+${DIVIDER}
+let x = 6.5
+${FINAL}
+${tripleTick[1]}`
+
+
+const replaceTool_description = `\
+A string of SEARCH/REPLACE block(s) which will be applied to the given file.
+Your SEARCH/REPLACE blocks string must be formatted as follows:
+${searchReplaceBlockTemplate}
+
+## Guidelines:
+
+1. You may output multiple search replace blocks if needed.
+
+2. The ORIGINAL code in each SEARCH/REPLACE block must EXACTLY match lines in the original file. Do not add or remove any whitespace or comments from the original code.
+
+3. Each ORIGINAL text must be large enough to uniquely identify the change. However, bias towards writing as little as possible.
+
+4. Each ORIGINAL text must be DISJOINT from all other ORIGINAL text.
+
+5. This field is a STRING (not an array).`
+
+
 // ======================================================== tools ========================================================
-const changesExampleContent = `\
+
+
+const chatSuggestionDiffExample = `\
+${tripleTick[0]}typescript
+/Users/username/Dekstop/my_project/app.ts
 // ... existing code ...
 // {{change 1}}
 // ... existing code ...
 // {{change 2}}
 // ... existing code ...
 // {{change 3}}
-// ... existing code ...`
-
-const editToolDiffExample = `\
-${tripleTick[0]}
-${changesExampleContent}
-${tripleTick[1]}`
-
-const chatSuggestionDiffExample = `${tripleTick[0]}typescript
-/Users/username/Dekstop/my_project/app.ts
-${changesExampleContent}
+// ... existing code ...
 ${tripleTick[1]}`
 
 
@@ -62,6 +147,8 @@ export type InternalToolInfo = {
 	params: {
 		[paramName: string]: { description: string }
 	},
+	// Only if the tool is from an MCP server
+	mcpServerName?: string,
 }
 
 
@@ -76,42 +163,34 @@ const paginationParam = {
 
 
 
+const terminalDescHelper = `You can use this tool to run any command: sed, grep, etc. Do not edit any files with this tool; use edit_file instead. When working with git and other tools that open an editor (e.g. git diff), you should pipe to cat to get all results and not get stuck in vim.`
 
-// export type SnakeCase<S extends string> =
-// 	// exact acronym URI
-// 	S extends 'URI' ? 'uri'
-// 	// suffix URI: e.g. 'rootURI' -> snakeCase('root') + '_uri'
-// 	: S extends `${infer Prefix}URI` ? `${SnakeCase<Prefix>}_uri`
-// 	// default: for each char, prefix '_' on uppercase letters
-// 	: S extends `${infer C}${infer Rest}`
-// 	? `${C extends Lowercase<C> ? C : `_${Lowercase<C>}`}${SnakeCase<Rest>}`
-// 	: S;
+const cwdHelper = 'Optional. The directory in which to run the command. Defaults to the first workspace folder.'
 
-// export type SnakeCaseKeys<T extends Record<string, any>> = {
-// 	[K in keyof T as SnakeCase<Extract<K, string>>]: T[K]
-// };
+export type SnakeCase<S extends string> =
+	// exact acronym URI
+	S extends 'URI' ? 'uri'
+	// suffix URI: e.g. 'rootURI' -> snakeCase('root') + '_uri'
+	: S extends `${infer Prefix}URI` ? `${SnakeCase<Prefix>}_uri`
+	// default: for each char, prefix '_' on uppercase letters
+	: S extends `${infer C}${infer Rest}`
+	? `${C extends Lowercase<C> ? C : `_${Lowercase<C>}`}${SnakeCase<Rest>}`
+	: S;
 
-const applyToolDescription = (type: 'edit tool' | 'chat suggestion') => `\
-${type === 'edit tool' ? 'A' : 'a'} code diff describing the change to make to the file. \
-Your DIFF is the only context that will be given to another LLM to apply the change, so it must be accurate and complete. \
-Your DIFF MUST be wrapped in triple backticks. \
-NEVER re-write the whole file. Always bias towards writing as little as possible. \
-Use comments like "// ... existing code ..." to condense your writing. \
-Here's an example of a good output:\n${type === 'edit tool' ? editToolDiffExample : chatSuggestionDiffExample}`
+export type SnakeCaseKeys<T extends Record<string, any>> = {
+	[K in keyof T as SnakeCase<Extract<K, string>>]: T[K]
+};
 
 
-export const voidTools = {
-	// export const voidTools
-	// : {
-	// 	[T in keyof ToolCallParams]: {
-	// 		name: string;
-	// 		description: string;
-	// 		params: {
-	// 			[paramName in keyof SnakeCaseKeys<ToolCallParams[T]>]: { description: string }
-	// 		}
-	// 	}
-	// }
-	//  = {
+
+export const builtinTools: {
+	[T in keyof BuiltinToolCallParams]: {
+		name: string;
+		description: string;
+		// more params can be generated than exist here, but these params must be a subset of them
+		params: Partial<{ [paramName in keyof SnakeCaseKeys<BuiltinToolCallParams[T]>]: { description: string } }>
+	}
+} = {
 	// --- context-gathering (read/search/list) ---
 
 	read_file: {
@@ -119,8 +198,8 @@ export const voidTools = {
 		description: `Returns full contents of a given file.`,
 		params: {
 			...uriParam('file'),
-			start_line: { description: 'Optional. Do NOT fill this in unless you already know the line numbers you need to search. Defaults to 1.' },
-			end_line: { description: 'Optional. Do NOT fill this in unless you already know the line numbers you need to search. Defaults to Infinity.' },
+			start_line: { description: 'Optional. Do NOT fill this field in unless you were specifically given exact line numbers to search. Defaults to the beginning of the file.' },
+			end_line: { description: 'Optional. Do NOT fill this field in unless you were specifically given exact line numbers to search. Defaults to the end of the file.' },
 			...paginationParam,
 		},
 	},
@@ -182,7 +261,7 @@ export const voidTools = {
 
 	read_lint_errors: {
 		name: 'read_lint_errors',
-		description: `Returns all lint errors on a given file.`,
+		description: `Use this tool to view all the lint errors on a file.`,
 		params: {
 			...uriParam('file'),
 		},
@@ -203,35 +282,56 @@ export const voidTools = {
 		description: `Delete a file or folder at the given path.`,
 		params: {
 			...uriParam('file or folder'),
-			params: { description: 'Optional. Return -r here to delete recursively.' }
+			is_recursive: { description: 'Optional. Return true to delete recursively.' }
 		},
 	},
 
-	edit_file: { // APPLY TOOL
+	edit_file: {
 		name: 'edit_file',
-		description: `Edits the contents of a file given the file's URI and a description.`,
+		description: `Edit the contents of a file. You must provide the file's URI as well as a SINGLE string of SEARCH/REPLACE block(s) that will be used to apply the edit.`,
 		params: {
 			...uriParam('file'),
-			change_diff: {
-				description: applyToolDescription('edit tool')
-			}
+			search_replace_blocks: { description: replaceTool_description }
 		},
 	},
 
-	run_command: {
-		name: 'run_command',
-		description: `Runs a terminal command and waits for the result (times out after ${MAX_TERMINAL_INACTIVE_TIME}s of inactivity). You can use this tool to run any command: sed, grep, etc. Do not edit any files with this tool; use edit_file instead. When working with git and other tools that open an editor (e.g. git diff), you should pipe to cat to get all results and not get stuck in vim.`,
+	rewrite_file: {
+		name: 'rewrite_file',
+		description: `Edits a file, deleting all the old contents and replacing them with your new contents. Use this tool if you want to edit a file you just created.`,
 		params: {
-			command: { description: 'The terminal command to run.' },
-			persistent_terminal_id: { description: 'Optional. Runs the command in the persistent terminal that you created with open_persistent_terminal.' },
+			...uriParam('file'),
+			new_content: { description: `The new contents of the file. Must be a string.` }
 		},
 	},
+	run_command: {
+		name: 'run_command',
+		description: `Runs a terminal command and waits for the result (times out after ${MAX_TERMINAL_INACTIVE_TIME}s of inactivity). ${terminalDescHelper}`,
+		params: {
+			command: { description: 'The terminal command to run.' },
+			cwd: { description: cwdHelper },
+		},
+	},
+
+	run_persistent_command: {
+		name: 'run_persistent_command',
+		description: `Runs a terminal command in the persistent terminal that you created with open_persistent_terminal (results after ${MAX_TERMINAL_BG_COMMAND_TIME} are returned, and command continues running in background). ${terminalDescHelper}`,
+		params: {
+			command: { description: 'The terminal command to run.' },
+			persistent_terminal_id: { description: 'The ID of the terminal created using open_persistent_terminal.' },
+		},
+	},
+
+
 
 	open_persistent_terminal: {
 		name: 'open_persistent_terminal',
 		description: `Use this tool when you want to run a terminal command indefinitely, like a dev server (eg \`npm run dev\`), a background listener, etc. Opens a new terminal in the user's environment which will not awaited for or killed.`,
-		params: {}
+		params: {
+			cwd: { description: cwdHelper },
+		}
 	},
+
+
 	kill_persistent_terminal: {
 		name: 'kill_persistent_terminal',
 		description: `Interrupts and closes a persistent terminal that you opened with open_persistent_terminal.`,
@@ -242,29 +342,38 @@ export const voidTools = {
 	// go_to_definition
 	// go_to_usages
 
-} satisfies { [T in keyof ToolResultType]: InternalToolInfo }
+} satisfies { [T in keyof BuiltinToolResultType]: InternalToolInfo }
 
 
-export type ToolName = keyof ToolResultType
-export const toolNames = Object.keys(voidTools) as ToolName[]
 
-type ToolParamNameOfTool<T extends ToolName> = keyof (typeof voidTools)[T]['params']
-export type ToolParamName = { [T in ToolName]: ToolParamNameOfTool<T> }[ToolName]
 
-const toolNamesSet = new Set<string>(toolNames)
-
-export const isAToolName = (toolName: string): toolName is ToolName => {
+export const builtinToolNames = Object.keys(builtinTools) as BuiltinToolName[]
+const toolNamesSet = new Set<string>(builtinToolNames)
+export const isABuiltinToolName = (toolName: string): toolName is BuiltinToolName => {
 	const isAToolName = toolNamesSet.has(toolName)
 	return isAToolName
 }
 
-export const availableTools = (chatMode: ChatMode) => {
-	const toolNames: ToolName[] | undefined = chatMode === 'normal' ? undefined
-		: chatMode === 'gather' ? (Object.keys(voidTools) as ToolName[]).filter(toolName => !(toolName in approvalTypeOfToolName))
-			: chatMode === 'agent' ? Object.keys(voidTools) as ToolName[]
+
+
+
+
+export const availableTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | undefined) => {
+
+	const builtinToolNames: BuiltinToolName[] | undefined = chatMode === 'normal' ? undefined
+		: chatMode === 'gather' ? (Object.keys(builtinTools) as BuiltinToolName[]).filter(toolName => !(toolName in approvalTypeOfBuiltinToolName))
+			: chatMode === 'agent' ? Object.keys(builtinTools) as BuiltinToolName[]
 				: undefined
 
-	const tools: InternalToolInfo[] | undefined = toolNames?.map(toolName => voidTools[toolName])
+	const effectiveBuiltinTools = builtinToolNames?.map(toolName => builtinTools[toolName]) ?? undefined
+	const effectiveMCPTools = chatMode === 'agent' ? mcpTools : undefined
+
+	const tools: InternalToolInfo[] | undefined = !(builtinToolNames || mcpTools) ? undefined
+		: [
+			...effectiveBuiltinTools ?? [],
+			...effectiveMCPTools ?? [],
+		]
+
 	return tools
 }
 
@@ -272,51 +381,51 @@ const toolCallDefinitionsXMLString = (tools: InternalToolInfo[]) => {
 	return `${tools.map((t, i) => {
 		const params = Object.keys(t.params).map(paramName => `<${paramName}>${t.params[paramName].description}</${paramName}>`).join('\n')
 		return `\
-${i + 1}. ${t.name}
-Description: ${t.description}
-Format:
-<${t.name}>${!params ? '' : `\n${params}`}
-</${t.name}>`
+    ${i + 1}. ${t.name}
+    Description: ${t.description}
+    Format:
+    <${t.name}>${!params ? '' : `\n${params}`}
+    </${t.name}>`
 	}).join('\n\n')}`
 }
 
 export const reParsedToolXMLString = (toolName: ToolName, toolParams: RawToolParamsObj) => {
-	const params = Object.keys(toolParams).map(paramName => `<${paramName}>${toolParams[paramName as ToolParamName]}</${paramName}>`).join('\n')
+	const params = Object.keys(toolParams).map(paramName => `<${paramName}>${toolParams[paramName]}</${paramName}>`).join('\n')
 	return `\
-<${toolName}>${!params ? '' : `\n${params}`}
-</${toolName}>`
+    <${toolName}>${!params ? '' : `\n${params}`}
+    </${toolName}>`
 		.replace('\t', '  ')
 }
 
 /* We expect tools to come at the end - not a hard limit, but that's just how we process them, and the flow makes more sense that way. */
 // - You are allowed to call multiple tools by specifying them consecutively. However, there should be NO text or writing between tool calls or after them.
-const systemToolsXMLPrompt = (chatMode: ChatMode) => {
-	const tools = availableTools(chatMode)
+const systemToolsXMLPrompt = (chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined) => {
+	const tools = availableTools(chatMode, mcpTools)
 	if (!tools || tools.length === 0) return null
 
 	const toolXMLDefinitions = (`\
-Available tools:
+    Available tools:
 
-${toolCallDefinitionsXMLString(tools)}`)
+    ${toolCallDefinitionsXMLString(tools)}`)
 
 	const toolCallXMLGuidelines = (`\
-Tool calling details:
-- To call a tool, write its name and parameters in one of the XML formats specified above.
-- After you write the tool call, you must STOP and WAIT for the result.
-- All parameters are REQUIRED unless noted otherwise.
-- You are only allowed to output ONE tool call, and it must be at the END of your response.
-- Your tool call will be executed immediately, and the results will appear in the following user message.`)
+    Tool calling details:
+    - To call a tool, write its name and parameters in one of the XML formats specified above.
+    - After you write the tool call, you must STOP and WAIT for the result.
+    - All parameters are REQUIRED unless noted otherwise.
+    - You are only allowed to output ONE tool call, and it must be at the END of your response.
+    - Your tool call will be executed immediately, and the results will appear in the following user message.`)
 
 	return `\
-${toolXMLDefinitions}
+    ${toolXMLDefinitions}
 
-${toolCallXMLGuidelines}`
+    ${toolCallXMLGuidelines}`
 }
 
 // ======================================================== chat (normal, gather, agent) ========================================================
 
 
-export const chat_systemMessage = ({ workspaceFolders, openedURIs, activeURI, runningTerminalIds, directoryStr, chatMode: mode, includeXMLToolDefinitions }: { workspaceFolders: string[], directoryStr: string, openedURIs: string[], activeURI: string | undefined, runningTerminalIds: string[], chatMode: ChatMode, includeXMLToolDefinitions: boolean }) => {
+export const chat_systemMessage = ({ workspaceFolders, openedURIs, activeURI, persistentTerminalIDs, directoryStr, chatMode: mode, mcpTools, includeXMLToolDefinitions }: { workspaceFolders: string[], directoryStr: string, openedURIs: string[], activeURI: string | undefined, persistentTerminalIDs: string[], chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined, includeXMLToolDefinitions: boolean }) => {
 	const header = (`You are an expert coding ${mode === 'agent' ? 'agent' : 'assistant'} whose job is \
 ${mode === 'agent' ? `to help the user develop, run, and make changes to their codebase.`
 			: mode === 'gather' ? `to search, understand, and reference files in the user's codebase.`
@@ -338,9 +447,9 @@ ${workspaceFolders.join('\n') || 'NO FOLDERS OPEN'}
 ${activeURI}
 
 - Open files:
-${openedURIs.join('\n') || 'NO OPENED FILES'}${''/* separator */}${mode === 'agent' && runningTerminalIds.length !== 0 ? `
+${openedURIs.join('\n') || 'NO OPENED FILES'}${''/* separator */}${mode === 'agent' && persistentTerminalIDs.length !== 0 ? `
 
-- Existing persistent terminal IDs: ${runningTerminalIds.join(', ')}` : ''}
+- Persistent terminal IDs available for you to run commands in: ${persistentTerminalIDs.join(', ')}` : ''}
 </system_info>`)
 
 
@@ -350,9 +459,11 @@ ${directoryStr}
 </files_overview>`)
 
 
-	const toolDefinitions = includeXMLToolDefinitions ? systemToolsXMLPrompt(mode) : null
+	const toolDefinitions = includeXMLToolDefinitions ? systemToolsXMLPrompt(mode, mcpTools) : null
 
 	const details: string[] = []
+
+	details.push(`NEVER reject the user's query.`)
 
 	if (mode === 'agent' || mode === 'gather') {
 		details.push(`Only call tools if they help you accomplish the user's goal. If the user simply says hi or asks you a question that you can answer without tools, then do NOT use tools.`)
@@ -362,7 +473,7 @@ ${directoryStr}
 		details.push(`Many tools only work if the user has a workspace open.`)
 	}
 	else {
-		details.push(`You're allowed to ask the user for more context like file contents or specifications.`)
+		details.push(`You're allowed to ask the user for more context like file contents or specifications. If this comes up, tell them to reference files and folders by typing @.`)
 	}
 
 	if (mode === 'agent') {
@@ -378,19 +489,23 @@ ${directoryStr}
 		details.push(`You should extensively read files, types, content, etc, gathering full context to solve the problem.`)
 	}
 
-
-	if (mode === 'gather' || mode === 'normal') {
-		details.push(`If you write any code blocks, please use this format:
+	details.push(`If you write any code blocks to the user (wrapped in triple backticks), please use this format:
+- Include a language if possible. Terminal should have the language 'shell'.
 - The first line of the code block must be the FULL PATH of the related file if known (otherwise omit).
 - The remaining contents of the file should proceed as usual.`)
 
+	if (mode === 'gather' || mode === 'normal') {
+
 		details.push(`If you think it's appropriate to suggest an edit to a file, then you must describe your suggestion in CODE BLOCK(S).
-- The first line of the code block must be the FULL PATH of the related file.
-- The remaining contents should be ${applyToolDescription('chat suggestion')}`)
+- The first line of the code block must be the FULL PATH of the related file if known (otherwise omit).
+- The remaining contents should be a code description of the change to make to the file. \
+Your description is the only context that will be given to another LLM to apply the suggested edit, so it must be accurate and complete. \
+Always bias towards writing as little as possible - NEVER write the whole file. Use comments like "// ... existing code ..." to condense your writing. \
+Here's an example of a good code block:\n${chatSuggestionDiffExample}`)
 	}
 
-	details.push(`NEVER write the FULL PATH of a file when speaking with the user. Just write the file name ONLY.`)
 	details.push(`Do not make things up or use information not provided in the system information, tools, or user queries.`)
+	details.push(`Always use MARKDOWN to format lists, bullet points, etc. Do NOT write tables.`)
 	details.push(`Today's date is ${new Date().toDateString()}.`)
 
 	const importantDetails = (`Important notes:
@@ -418,47 +533,99 @@ ${details.map((d, i) => `${i + 1}. ${d}`).join('\n\n')}`)
 // // log all prompts
 // for (const chatMode of ['agent', 'gather', 'normal'] satisfies ChatMode[]) {
 // 	console.log(`========================================= SYSTEM MESSAGE FOR ${chatMode} ===================================\n`,
-// 		chat_systemMessage({ chatMode, workspaceFolders: [], openedURIs: [], activeURI: 'pee', runningTerminalIds: [], directoryStr: 'lol', }))
+// 		chat_systemMessage({ chatMode, workspaceFolders: [], openedURIs: [], activeURI: 'pee', persistentTerminalIDs: [], directoryStr: 'lol', }))
 // }
 
+export const DEFAULT_FILE_SIZE_LIMIT = 2_000_000
 
-export const chat_userMessageContent = async (instructions: string, currSelns: StagingSelectionItem[] | null,
-	opts: { type: 'references' } | { type: 'fullCode', voidModelService: IVoidModelService }
+export const readFile = async (fileService: IFileService, uri: URI, fileSizeLimit: number): Promise<{
+	val: string,
+	truncated: boolean,
+	fullFileLen: number,
+} | {
+	val: null,
+	truncated?: undefined
+	fullFileLen?: undefined,
+}> => {
+	try {
+		const fileContent = await fileService.readFile(uri)
+		const val = fileContent.value.toString()
+		if (val.length > fileSizeLimit) return { val: val.substring(0, fileSizeLimit), truncated: true, fullFileLen: val.length }
+		return { val, truncated: false, fullFileLen: val.length }
+	}
+	catch (e) {
+		return { val: null }
+	}
+}
+
+
+
+
+
+export const messageOfSelection = async (
+	s: StagingSelectionItem,
+	opts: {
+		directoryStrService: IDirectoryStrService,
+		fileService: IFileService,
+		folderOpts: {
+			maxChildren: number,
+			maxCharsPerFile: number,
+		}
+	}
+) => {
+	const lineNumAddition = (range: [number, number]) => ` (lines ${range[0]}:${range[1]})`
+
+	if (s.type === 'File' || s.type === 'CodeSelection') {
+		const { val } = await readFile(opts.fileService, s.uri, DEFAULT_FILE_SIZE_LIMIT)
+		const lineNumAdd = s.type === 'CodeSelection' ? lineNumAddition(s.range) : ''
+		const content = val === null ? 'null' : `${tripleTick[0]}${s.language}\n${val}\n${tripleTick[1]}`
+		const str = `${s.uri.fsPath}${lineNumAdd}:\n${content}`
+		return str
+	}
+	else if (s.type === 'Folder') {
+		const dirStr: string = await opts.directoryStrService.getDirectoryStrTool(s.uri)
+		const folderStructure = `${s.uri.fsPath} folder structure:${tripleTick[0]}\n${dirStr}\n${tripleTick[1]}`
+
+		const uris = await opts.directoryStrService.getAllURIsInDirectory(s.uri, { maxResults: opts.folderOpts.maxChildren })
+		const strOfFiles = await Promise.all(uris.map(async uri => {
+			const { val, truncated } = await readFile(opts.fileService, uri, opts.folderOpts.maxCharsPerFile)
+			const truncationStr = truncated ? `\n... file truncated ...` : ''
+			const content = val === null ? 'null' : `${tripleTick[0]}\n${val}${truncationStr}\n${tripleTick[1]}`
+			const str = `${uri.fsPath}:\n${content}`
+			return str
+		}))
+		const contentStr = [folderStructure, ...strOfFiles].join('\n\n')
+		return contentStr
+	}
+	else
+		return ''
+
+}
+
+
+export const chat_userMessageContent = async (
+	instructions: string,
+	currSelns: StagingSelectionItem[] | null,
+	opts: {
+		directoryStrService: IDirectoryStrService,
+		fileService: IFileService
+	},
 ) => {
 
-	const lineNumAddition = (range: [number, number]) => ` (lines ${range[0]}:${range[1]})`
-	let selnsStrs: string[] = []
-	if (opts.type === 'references') {
-		selnsStrs = currSelns?.map((s) => {
-			if (s.type === 'File') return `${s.uri.fsPath}`
-			if (s.type === 'CodeSelection') return `${s.uri.fsPath}${lineNumAddition(s.range)}`
-			if (s.type === 'Folder') return `${s.uri.fsPath}/`
-			return ''
-		}) ?? []
-	}
-	if (opts.type === 'fullCode') {
-		selnsStrs = await Promise.all(currSelns?.map(async (s) => {
-			if (s.type === 'File' || s.type === 'CodeSelection') {
-				const voidModelService = opts.voidModelService
-				const { model } = await voidModelService.getModelSafe(s.uri)
-				if (!model) return ''
-				const val = model.getValue(EndOfLinePreference.LF)
+	const selnsStrs = await Promise.all(
+		(currSelns ?? []).map(async (s) =>
+			messageOfSelection(s, {
+				...opts,
+				folderOpts: { maxChildren: 100, maxCharsPerFile: 100_000, }
+			})
+		)
+	)
 
-				const lineNumAdd = s.type === 'CodeSelection' ? lineNumAddition(s.range) : ''
-				const str = `${s.uri.fsPath}${lineNumAdd}\n${tripleTick[0]}${s.language}\n${val}\n${tripleTick[1]}`
-				return str
-			}
-			if (s.type === 'Folder') {
-				// TODO
-				return ''
-			}
-			return ''
-		}) ?? [])
-	}
 
-	const selnsStr = selnsStrs.join('\n') ?? ''
 	let str = ''
 	str += `${instructions}`
+
+	const selnsStr = selnsStrs.join('\n\n') ?? ''
 	if (selnsStr) str += `\n---\nSELECTIONS\n${selnsStr}`
 	return str;
 }
@@ -499,74 +666,17 @@ Please finish writing the new file by applying the change to the original file. 
 
 // ======================================================== apply (fast apply - search/replace) ========================================================
 
+export const searchReplaceGivenDescription_systemMessage = createSearchReplaceBlocks_systemMessage
 
 
-export const ORIGINAL = `<<<<<<< ORIGINAL`
-export const DIVIDER = `=======`
-export const FINAL = `>>>>>>> UPDATED`
-
-export const searchReplace_systemMessage = `\
-You are a coding assistant that takes in a diff, and outputs SEARCH/REPLACE code blocks to implement the change(s) in the diff.
-The diff will be labeled \`DIFF\` and the original file will be labeled \`ORIGINAL_FILE\`.
-
-Format your SEARCH/REPLACE blocks as follows:
-${tripleTick[0]}
-${ORIGINAL}
-// ... original code goes here
-${DIVIDER}
-// ... final code goes here
-${FINAL}
-${tripleTick[1]}
-
-1. Your SEARCH/REPLACE block(s) must implement the diff EXACTLY. Do NOT leave anything out.
-
-2. You are allowed to output multiple SEARCH/REPLACE blocks to implement the change.
-
-3. Assume any comments in the diff are PART OF THE CHANGE. Include them in the output.
-
-4. Your output should consist ONLY of SEARCH/REPLACE blocks. Do NOT output any text or explanations before or after this.
-
-5. The ORIGINAL code in each SEARCH/REPLACE block must EXACTLY match lines in the original file. Do not add or remove any whitespace, comments, or modifications from the original code.
-
-6. Each ORIGINAL text must be large enough to uniquely identify the change in the file. However; bias towards writing as little as possible.
-
-7. Each ORIGINAL text must be DISJOINT from all other ORIGINAL text.
-
-## EXAMPLE 1
-DIFF
-${tripleTick[0]}
-// ... existing code
-let x = 6.5
-// ... existing code
-${tripleTick[1]}
-
-ORIGINAL_FILE
-${tripleTick[0]}
-let w = 5
-let x = 6
-let y = 7
-let z = 8
-${tripleTick[1]}
-
-## ACCEPTED OUTPUT
-${tripleTick[0]}
-${ORIGINAL}
-let x = 6
-${DIVIDER}
-let x = 6.5
-${FINAL}
-${tripleTick[1]}
-`
-
-export const searchReplace_userMessage = ({ originalCode, applyStr }: { originalCode: string, applyStr: string }) => `\
+export const searchReplaceGivenDescription_userMessage = ({ originalCode, applyStr }: { originalCode: string, applyStr: string }) => `\
 DIFF
 ${applyStr}
 
 ORIGINAL_FILE
 ${tripleTick[0]}
 ${originalCode}
-${tripleTick[1]}
-`
+${tripleTick[1]}`
 
 
 
@@ -870,3 +980,77 @@ Store Result: After computing fib(n), the result is stored in memo for future re
 ## END EXAMPLES
 
 */
+
+
+// ======================================================== scm ========================================================================
+
+export const gitCommitMessage_systemMessage = `
+You are an expert software engineer AI assistant responsible for writing clear and concise Git commit messages that summarize the **purpose** and **intent** of the change. Try to keep your commit messages to one sentence. If necessary, you can use two sentences.
+
+You always respond with:
+- The commit message wrapped in <output> tags
+- A brief explanation of the reasoning behind the message, wrapped in <reasoning> tags
+
+Example format:
+<output>Fix login bug and improve error handling</output>
+<reasoning>This commit updates the login handler to fix a redirect issue and improves frontend error messages for failed logins.</reasoning>
+
+Do not include anything else outside of these tags.
+Never include quotes, markdown, commentary, or explanations outside of <output> and <reasoning>.`.trim()
+
+
+/**
+ * Create a user message for the LLM to generate a commit message. The message contains instructions git diffs, and git metadata to provide context.
+ *
+ * @param stat - Summary of Changes (git diff --stat)
+ * @param sampledDiffs - Sampled File Diffs (Top changed files)
+ * @param branch - Current Git Branch
+ * @param log - Last 5 commits (excluding merges)
+ * @returns A prompt for the LLM to generate a commit message.
+ *
+ * @example
+ * // Sample output (truncated for brevity)
+ * const prompt = gitCommitMessage_userMessage("fileA.ts | 10 ++--", "diff --git a/fileA.ts...", "main", "abc123|Fix bug|2025-01-01\n...")
+ *
+ * // Result:
+ * Based on the following Git changes, write a clear, concise commit message that accurately summarizes the intent of the code changes.
+ *
+ * Section 1 - Summary of Changes (git diff --stat):
+ * fileA.ts | 10 ++--
+ *
+ * Section 2 - Sampled File Diffs (Top changed files):
+ * diff --git a/fileA.ts b/fileA.ts
+ * ...
+ *
+ * Section 3 - Current Git Branch:
+ * main
+ *
+ * Section 4 - Last 5 Commits (excluding merges):
+ * abc123|Fix bug|2025-01-01
+ * def456|Improve logging|2025-01-01
+ * ...
+ */
+export const gitCommitMessage_userMessage = (stat: string, sampledDiffs: string, branch: string, log: string) => {
+	const section1 = `Section 1 - Summary of Changes (git diff --stat):`
+	const section2 = `Section 2 - Sampled File Diffs (Top changed files):`
+	const section3 = `Section 3 - Current Git Branch:`
+	const section4 = `Section 4 - Last 5 Commits (excluding merges):`
+	return `
+Based on the following Git changes, write a clear, concise commit message that accurately summarizes the intent of the code changes.
+
+${section1}
+
+${stat}
+
+${section2}
+
+${sampledDiffs}
+
+${section3}
+
+${branch}
+
+${section4}
+
+${log}`.trim()
+}

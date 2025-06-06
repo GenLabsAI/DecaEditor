@@ -42,8 +42,12 @@ export const IEditCodeService = createDecorator<IEditCodeService>('editCodeServi
 export interface IEditCodeService {
 	readonly _serviceBrand: undefined;
 
-	callBeforeStartApplying(opts: CallBeforeStartApplyingOpts): Promise<void>;
+	processRawKeybindingText(keybindingStr: string): string;
+
+	callBeforeApplyOrEdit(uri: URI | 'current'): Promise<void>;
 	startApplying(opts: StartApplyingOpts): [URI, Promise<void>] | null;
+	instantlyApplySearchReplaceBlocks(opts: { uri: URI; searchReplaceBlocks: string }): void;
+	instantlyRewriteFile(opts: { uri: URI; newContent: string }): void;
 	addCtrlKZone(opts: AddCtrlKOpts): number | undefined;
 	removeCtrlKZone(opts: { diffareaid: number }): void;
 
@@ -52,6 +56,8 @@ export interface IEditCodeService {
 	diffOfId: Record<string, Diff>;
 
 	acceptOrRejectAllDiffAreas(opts: { uri: URI, removeCtrlKs: boolean, behavior: 'reject' | 'accept', _addToHistory?: boolean }): void;
+	acceptDiff({ diffid }: { diffid: number }): void;
+	rejectDiff({ diffid }: { diffid: number }): void;
 
 	// events
 	onDidAddOrDeleteDiffZones: Event<{ uri: URI }>;

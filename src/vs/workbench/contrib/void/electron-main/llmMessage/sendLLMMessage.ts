@@ -20,8 +20,10 @@ export const sendLLMMessage = async ({
 	settingsOfProvider,
 	modelSelection,
 	modelSelectionOptions,
+	overridesOfModel,
 	chatMode,
 	separateSystemMessage,
+	mcpTools,
 }: SendLLMMessageParams,
 
 	metricsService: IMetricsService
@@ -32,6 +34,8 @@ export const sendLLMMessage = async ({
 
 	// only captures number of messages and message "shape", no actual code, instructions, prompts, etc
 	const captureLLMEvent = (eventId: string, extras?: object) => {
+
+
 		metricsService.capture(eventId, {
 			providerName,
 			modelName,
@@ -39,15 +43,10 @@ export const sendLLMMessage = async ({
 			numModelsAtEndpoint: settingsOfProvider[providerName]?.models?.length,
 			...messagesType === 'chatMessages' ? {
 				numMessages: messages_?.length,
-				messagesShape: messages_?.map(msg => ({ role: msg.role, length: msg.content.length })),
-				origNumMessages: messages_?.length,
-				origMessagesShape: messages_?.map(msg => ({ role: msg.role, length: msg.content.length })),
-
 			} : messagesType === 'FIMMessage' ? {
 				prefixLength: messages_.prefix.length,
 				suffixLength: messages_.suffix.length,
 			} : {},
-
 			...loggingExtras,
 			...extras,
 		})
@@ -67,9 +66,9 @@ export const sendLLMMessage = async ({
 	}
 
 	const onFinalMessage: OnFinalMessage = (params) => {
-		const { fullText, fullReasoning } = params
+		const { fullText, fullReasoning, toolCall } = params
 		if (_didAbort) return
-		captureLLMEvent(`${loggingName} - Received Full Message`, { messageLength: fullText.length, reasoningLength: fullReasoning?.length, duration: new Date().getMilliseconds() - submit_time.getMilliseconds() })
+		captureLLMEvent(`${loggingName} - Received Full Message`, { messageLength: fullText.length, reasoningLength: fullReasoning?.length, duration: new Date().getMilliseconds() - submit_time.getMilliseconds(), toolCallName: toolCall?.name })
 		onFinalMessage_(params)
 	}
 
@@ -94,10 +93,11 @@ export const sendLLMMessage = async ({
 	}
 	abortRef_.current = onAbort
 
+
 	if (messagesType === 'chatMessages')
-		captureLLMEvent(`${loggingName} - Sending Message`, { messageLength: messages_?.[messages_.length - 1]?.content.length })
+		captureLLMEvent(`${loggingName} - Sending Message`, {})
 	else if (messagesType === 'FIMMessage')
-		captureLLMEvent(`${loggingName} - Sending FIM`, { prefixLen: messages_?.prefix?.length, suffixLen: messages_?.suffix?.length }) // TODO!!! add more metrics for FIM
+		captureLLMEvent(`${loggingName} - Sending FIM`, { prefixLen: messages_?.prefix?.length, suffixLen: messages_?.suffix?.length })
 
 
 	try {
@@ -108,15 +108,15 @@ export const sendLLMMessage = async ({
 		}
 		const { sendFIM, sendChat } = implementation
 		if (messagesType === 'chatMessages') {
-			await sendChat({ messages: messages_, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, modelName, _setAborter, providerName, separateSystemMessage, chatMode })
+			await sendChat({ messages: messages_, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName, _setAborter, providerName, separateSystemMessage, chatMode, mcpTools })
 			return
 		}
 		if (messagesType === 'FIMMessage') {
 			if (sendFIM) {
-				await sendFIM({ messages: messages_, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, modelName, _setAborter, providerName, separateSystemMessage })
+				await sendFIM({ messages: messages_, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName, _setAborter, providerName, separateSystemMessage })
 				return
 			}
-			onError({ message: `Error: This provider does not support Autocomplete yet.`, fullError: null })
+			onError({ message: `Error running Autocomplete with ${providerName} - ${modelName}.`, fullError: null })
 			return
 		}
 		onError({ message: `Error: Message type "${messagesType}" not recognized.`, fullError: null })

@@ -6,7 +6,7 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILanguageFeaturesService } from '../../../../editor/common/services/languageFeatures.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { ITextModel } from '../../../../editor/common/model.js';
+import { EndOfLinePreference, ITextModel } from '../../../../editor/common/model.js';
 import { Position } from '../../../../editor/common/core/position.js';
 import { InlineCompletion, } from '../../../../editor/common/languages.js';
 import { Range } from '../../../../editor/common/core/range.js';
@@ -425,7 +425,7 @@ const toInlineCompletions = ({ autocompletionMatchup, autocompletion, prefixAndS
 type PrefixAndSuffixInfo = { prefix: string, suffix: string, prefixLines: string[], suffixLines: string[], prefixToTheLeftOfCursor: string, suffixToTheRightOfCursor: string }
 const getPrefixAndSuffixInfo = (model: ITextModel, position: Position): PrefixAndSuffixInfo => {
 
-	const fullText = model.getValue();
+	const fullText = model.getValue(EndOfLinePreference.LF);
 
 	const cursorOffset = model.getOffsetAt(position)
 	const prefix = fullText.substring(0, cursorOffset)
@@ -790,6 +790,7 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 		console.log('starting autocomplete...', predictionType)
 
 		const featureName: FeatureName = 'Autocomplete'
+		const overridesOfModel = this._settingsService.state.overridesOfModel
 		const modelSelection = this._settingsService.state.modelSelectionOfFeature[featureName]
 		const modelSelectionOptions = modelSelection ? this._settingsService.state.optionsOfModelSelection[featureName][modelSelection.providerName]?.[modelSelection.modelName] : undefined
 
@@ -807,6 +808,7 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 				}),
 				modelSelection,
 				modelSelectionOptions,
+				overridesOfModel,
 				logging: { loggingName: 'Autocomplete' },
 				onText: () => { }, // unused in FIMMessage
 				// onText: async ({ fullText, newText }) => {

@@ -45,11 +45,13 @@ export const VoidTooltip = () => {
 		<>
 			<style>
 				{`
-				#void-tooltip, #void-tooltip-orange, #void-tooltip-green, #void-tooltip-ollama-settings {
+				#void-tooltip, #void-tooltip-orange, #void-tooltip-green, #void-tooltip-ollama-settings, #void-tooltip-provider-info {
 					font-size: 12px;
 					padding: 0px 8px;
 					border-radius: 6px;
 					z-index: 999999;
+					max-width: 300px;
+					word-wrap: break-word;
 				}
 
 				#void-tooltip {
@@ -67,7 +69,7 @@ export const VoidTooltip = () => {
 					color: white;
 				}
 
-				#void-tooltip-ollama-settings {
+				#void-tooltip-ollama-settings, #void-tooltip-provider-info {
 					background-color: var(--vscode-editor-background);
 					color: var(--vscode-input-foreground);
 				}
@@ -112,14 +114,25 @@ export const VoidTooltip = () => {
 					</div>
 					<div style={{ marginBottom: 4 }}>
 						<span style={{ opacity: 0.8 }}>For chat:{` `}</span>
-						<span style={{ opacity: 0.8, fontWeight: 'bold' }}>llama3.1</span>
+						<span style={{ opacity: 0.8, fontWeight: 'bold' }}>gemma3</span>
 					</div>
-					<div>
+					<div style={{ marginBottom: 4 }}>
 						<span style={{ opacity: 0.8 }}>For autocomplete:{` `}</span>
-						<span style={{ opacity: 0.8, fontWeight: 'bold' }}>qwen2.5-coder:1.5b</span>
+						<span style={{ opacity: 0.8, fontWeight: 'bold' }}>qwen2.5-coder</span>
+					</div>
+					<div style={{ marginBottom: 0 }}>
+						<span style={{ opacity: 0.8 }}>Use the largest version of these you can!</span>
 					</div>
 				</div>
 			</Tooltip>
+
+			<Tooltip
+				id="void-tooltip-provider-info"
+				border='1px solid rgba(100,100,100,.2)'
+				opacity={1}
+				delayShow={50}
+				style={{ pointerEvents: 'all', userSelect: 'text', fontSize: 11, maxWidth: '280px', paddingTop:'8px', paddingBottom:'8px' }}
+			/>
 		</>
 	);
 };

@@ -3,14 +3,13 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react'
+import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react'; // Added useRef import just in case it was missed, though likely already present
 import { ProviderName, SettingName, displayInfoOfSettingName, providerNames, VoidStatefulModelInfo, customSettingNamesOfProvider, RefreshableProviderName, refreshableProviderNames, displayInfoOfProviderName, nonlocalProviderNames, localProviderNames, GlobalSettingName, featureNames, displayInfoOfFeatureName, isProviderNameDisabled, FeatureName, hasDownloadButtonsOnModelsProviderNames, subTextMdOfProviderName } from '../../../../common/voidSettingsTypes.js'
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
 import { VoidButtonBgDarken, VoidCustomDropdownBox, VoidInputBox2, VoidSimpleInputBox, VoidSwitch } from '../util/inputs.js'
 import { useAccessor, useIsDark, useRefreshModelListener, useRefreshModelState, useSettingsState } from '../util/services.js'
-import { X, RefreshCw, Loader2, Check, } from 'lucide-react'
+import { X, RefreshCw, Loader2, Check, Asterisk, Plus } from 'lucide-react'
 import { URI } from '../../../../../../../base/common/uri.js'
-import { env } from '../../../../../../../base/common/process.js'
 import { ModelDropdown } from './ModelDropdown.js'
 import { ChatMarkdownRender } from '../markdown/ChatMarkdownRender.js'
 import { WarningBox } from './WarningBox.js'
@@ -18,6 +17,20 @@ import { os } from '../../../../common/helpers/systemInfo.js'
 import { IconLoading } from '../sidebar-tsx/SidebarChat.js'
 import { ToolApprovalType, toolApprovalTypes } from '../../../../common/toolsServiceTypes.js'
 import Severity from '../../../../../../../base/common/severity.js'
+import { getModelCapabilities, modelOverrideKeys, ModelOverrides } from '../../../../common/modelCapabilities.js';
+import { TransferEditorType, TransferFilesInfo } from '../../../extensionTransferTypes.js';
+import { MCPServer } from '../../../../common/mcpServiceTypes.js';
+import { useMCPServiceState } from '../util/services.js';
+
+type Tab =
+	| 'models'
+	| 'localProviders'
+	| 'providers'
+	| 'featureOptions'
+	| 'mcp'
+	| 'general'
+	| 'all';
+
 
 const ButtonLeftTextRightOption = ({ text, leftButton }: { text: string, leftButton?: React.ReactNode }) => {
 
@@ -147,7 +160,7 @@ const AddButton = ({ disabled, text = 'Add', ...props }: { disabled?: boolean, t
 
 	return <button
 		disabled={disabled}
-		className={`bg-[#0e70c0] px-3 py-1 text-white dark:text-black rounded-sm ${!disabled ? 'hover:bg-[#1177cb] cursor-pointer' : 'opacity-50 cursor-not-allowed bg-opacity-70'}`}
+		className={`bg-[#0e70c0] px-3 py-1 text-white rounded-sm ${!disabled ? 'hover:bg-[#1177cb] cursor-pointer' : 'opacity-50 cursor-not-allowed bg-opacity-70'}`}
 		{...props}
 	>{text}</button>
 
@@ -183,135 +196,205 @@ const ConfirmButton = ({ children, onConfirm, className }: { children: React.Rea
 	);
 };
 
+// ---------------- Simplified Model Settings Dialog ------------------
 
-// shows a providerName dropdown if no `providerName` is given
-export const AddModelInputBox = ({ providerName: permanentProviderName, className, compact }: { providerName?: ProviderName, className?: string, compact?: boolean }) => {
+// keys of ModelOverrides we allow the user to override
 
-	const accessor = useAccessor()
-	const settingsStateService = accessor.get('IVoidSettingsService')
 
-	const settingsState = useSettingsState()
 
-	const [isOpen, setIsOpen] = useState(false)
-	const [showCheckmark, setShowCheckmark] = useState(false)
+// This new dialog replaces the verbose UI with a single JSON override box.
+const SimpleModelSettingsDialog = ({
+	isOpen,
+	onClose,
+	modelInfo,
+}: {
+	isOpen: boolean;
+	onClose: () => void;
+	modelInfo: { modelName: string; providerName: ProviderName; type: 'autodetected' | 'custom' | 'default' } | null;
+}) => {
+	if (!isOpen || !modelInfo) return null;
 
-	// const providerNameRef = useRef<ProviderName | null>(null)
-	const [userChosenProviderName, setUserChosenProviderName] = useState<ProviderName | null>(null)
+	const { modelName, providerName, type } = modelInfo;
+	const accessor = useAccessor();
+	const settingsState = useSettingsState();
+	const mouseDownInsideModal = useRef(false); // Ref to track mousedown origin
+	const settingsStateService = accessor.get('IVoidSettingsService');
 
-	const providerName = permanentProviderName ?? userChosenProviderName;
+	// current overrides and defaults
+	const defaultModelCapabilities = getModelCapabilities(providerName, modelName, undefined);
+	const currentOverrides = settingsState.overridesOfModel?.[providerName]?.[modelName] ?? undefined;
+	const { recognizedModelName, isUnrecognizedModel } = defaultModelCapabilities
 
-	const [modelName, setModelName] = useState<string>('')
-	const [errorString, setErrorString] = useState('')
+	// Create the placeholder with the default values for allowed keys
+	const partialDefaults: Partial<ModelOverrides> = {};
+	for (const k of modelOverrideKeys) { if (defaultModelCapabilities[k]) partialDefaults[k] = defaultModelCapabilities[k] as any; }
+	const placeholder = JSON.stringify(partialDefaults, null, 2);
 
-	const numModels = providerName === null ? 0 : settingsState.settingsOfProvider[providerName].models.length
+	const [overrideEnabled, setOverrideEnabled] = useState<boolean>(() => !!currentOverrides);
 
-	if (showCheckmark) {
-		return <AnimatedCheckmarkButton text='Added' className={`bg-[#0e70c0] text-white dark:text-black px-3 py-1 rounded-sm ${className}`} />
-	}
+	const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-	if (!isOpen) {
-		return <div
-			className={`text-void-fg-4 flex flex-nowrap text-nowrap items-center hover:brightness-110 cursor-pointer ${className}`}
-			onClick={() => setIsOpen(true)}
+	const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
 
+	// reset when dialog toggles
+	useEffect(() => {
+		if (!isOpen) return;
+		const cur = settingsState.overridesOfModel?.[providerName]?.[modelName];
+		setOverrideEnabled(!!cur);
+		setErrorMsg(null);
+	}, [isOpen, providerName, modelName, settingsState.overridesOfModel, placeholder]);
+
+	const onSave = async () => {
+		// if disabled override, reset overrides
+		if (!overrideEnabled) {
+			await settingsStateService.setOverridesOfModel(providerName, modelName, undefined);
+			onClose();
+			return;
+		}
+
+		// enabled overrides
+		// parse json
+		let parsedInput: Record<string, unknown>
+
+		if (textAreaRef.current?.value) {
+			try {
+				parsedInput = JSON.parse(textAreaRef.current.value);
+			} catch (e) {
+				setErrorMsg('Invalid JSON');
+				return;
+			}
+		} else {
+			setErrorMsg('Invalid JSON');
+			return;
+		}
+
+		// only keep allowed keys
+		const cleaned: Partial<ModelOverrides> = {};
+		for (const k of modelOverrideKeys) {
+			if (!(k in parsedInput)) continue
+			const isEmpty = parsedInput[k] === '' || parsedInput[k] === null || parsedInput[k] === undefined;
+			if (!isEmpty) {
+				cleaned[k] = parsedInput[k] as any;
+			}
+		}
+		await settingsStateService.setOverridesOfModel(providerName, modelName, cleaned);
+		onClose();
+	};
+
+	const sourcecodeOverridesLink = `https://github.com/voideditor/void/blob/2e5ecb291d33afbe4565921664fb7e183189c1c5/src/vs/workbench/contrib/void/common/modelCapabilities.ts#L146-L172`
+
+	return (
+		<div // Backdrop
+			className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999999]"
+			onMouseDown={() => {
+				mouseDownInsideModal.current = false;
+			}}
+			onMouseUp={() => {
+				if (!mouseDownInsideModal.current) {
+					onClose();
+				}
+				mouseDownInsideModal.current = false;
+			}}
 		>
-			<div>
-				{numModels > 0 ? `Add a different model?` : `Add a model`}
+			{/* MODAL */}
+			<div
+				className="bg-void-bg-1 rounded-md p-4 max-w-xl w-full shadow-xl overflow-y-auto max-h-[90vh]"
+				onClick={(e) => e.stopPropagation()} // Keep stopping propagation for normal clicks inside
+				onMouseDown={(e) => {
+					mouseDownInsideModal.current = true;
+					e.stopPropagation();
+				}}
+			>
+				<div className="flex justify-between items-center mb-4">
+					<h3 className="text-lg font-medium">
+						Change Defaults for {modelName} ({displayInfoOfProviderName(providerName).title})
+					</h3>
+					<button
+						onClick={onClose}
+						className="text-void-fg-3 hover:text-void-fg-1"
+					>
+						<X className="size-5" />
+					</button>
+				</div>
+
+				{/* Display model recognition status */}
+				<div className="text-sm text-void-fg-3 mb-4">
+					{type === 'default' ? `${modelName} comes packaged with Void, so you shouldn't need to change these settings.`
+						: isUnrecognizedModel
+							? `Model not recognized by Void.`
+							: `Void recognizes ${modelName} ("${recognizedModelName}").`}
+				</div>
+
+
+				{/* override toggle */}
+				<div className="flex items-center gap-2 mb-4">
+					<VoidSwitch size='xs' value={overrideEnabled} onChange={setOverrideEnabled} />
+					<span className="text-void-fg-3 text-sm">Override model defaults</span>
+				</div>
+
+				{/* Informational link */}
+				{overrideEnabled && <div className="text-sm text-void-fg-3 mb-4">
+					<ChatMarkdownRender string={`See the [sourcecode](${sourcecodeOverridesLink}) for a reference on how to set this JSON (advanced).`} chatMessageLocation={undefined} />
+				</div>}
+
+				<textarea
+					key={overrideEnabled + ''}
+					ref={textAreaRef}
+					className={`w-full min-h-[200px] p-2 rounded-sm border border-void-border-2 bg-void-bg-2 resize-none font-mono text-sm ${!overrideEnabled ? 'text-void-fg-3' : ''}`}
+					defaultValue={overrideEnabled && currentOverrides ? JSON.stringify(currentOverrides, null, 2) : placeholder}
+					placeholder={placeholder}
+					readOnly={!overrideEnabled}
+				/>
+				{errorMsg && (
+					<div className="text-red-500 mt-2 text-sm">{errorMsg}</div>
+				)}
+
+
+				<div className="flex justify-end gap-2 mt-4">
+					<VoidButtonBgDarken onClick={onClose} className="px-3 py-1">
+						Cancel
+					</VoidButtonBgDarken>
+					<VoidButtonBgDarken
+						onClick={onSave}
+						className="px-3 py-1 bg-[#0e70c0] text-white"
+					>
+						Save
+					</VoidButtonBgDarken>
+				</div>
 			</div>
 		</div>
-	}
+	);
+};
 
 
-	return <>
-		<form className={`flex items-center gap-2 ${className}`}>
-
-			{/* X button
-			<button onClick={() => { setIsOpen(false) }} className='text-void-fg-4'><X className='size-4' /></button> */}
-
-			{/* provider input */}
-			<ErrorBoundary>
-				{!permanentProviderName &&
-					<VoidCustomDropdownBox
-						options={providerNames}
-						selectedOption={providerName}
-						onChangeOption={(pn) => setUserChosenProviderName(pn)}
-						getOptionDisplayName={(pn) => pn ? displayInfoOfProviderName(pn).title : 'Provider Name'}
-						getOptionDropdownName={(pn) => pn ? displayInfoOfProviderName(pn).title : 'Provider Name'}
-						getOptionsEqual={(a, b) => a === b}
-						// className={`max-w-44 w-full border border-void-border-2 bg-void-bg-1 text-void-fg-3 text-root py-[4px] px-[6px]`}
-						className={`max-w-32 mx-2 w-full resize-none bg-void-bg-1 text-void-fg-1 placeholder:text-void-fg-3 border border-void-border-2 focus:border-void-border-1 py-1 px-2 rounded`}
-						arrowTouchesText={false}
-					/>
-				}
-			</ErrorBoundary>
 
 
-			{/* model input */}
-			<ErrorBoundary>
-				<VoidSimpleInputBox
-					value={modelName}
-					onChangeValue={setModelName}
-					placeholder='Model Name'
-					compact={compact}
-					className={'max-w-32'}
-				/>
-			</ErrorBoundary>
-
-			{/* add button */}
-			<ErrorBoundary>
-				<AddButton
-					type='submit'
-					disabled={!modelName}
-					onClick={(e) => {
-						if (providerName === null) {
-							setErrorString('Please select a provider.')
-							return
-						}
-						if (!modelName) {
-							setErrorString('Please enter a model name.')
-							return
-						}
-						// if model already exists here
-						if (settingsState.settingsOfProvider[providerName].models.find(m => m.modelName === modelName)) {
-							// setErrorString(`This model already exists under ${providerName}.`)
-							setErrorString(`This model already exists.`)
-							return
-						}
-
-						settingsStateService.addModel(providerName, modelName)
-						setShowCheckmark(true)
-						setTimeout(() => {
-							setShowCheckmark(false)
-							setIsOpen(false)
-						}, 1500)
-						setErrorString('')
-						setModelName('')
-					}}
-				/>
-			</ErrorBoundary>
-
-
-		</form>
-
-		{!errorString ? null : <div className='text-red-500 truncate whitespace-nowrap mt-1'>
-			{errorString}
-		</div>}
-
-	</>
-
-}
-
-
-export const ModelDump = () => {
-
+export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderName[] }) => {
 	const accessor = useAccessor()
 	const settingsStateService = accessor.get('IVoidSettingsService')
-
 	const settingsState = useSettingsState()
+
+	// State to track which model's settings dialog is open
+	const [openSettingsModel, setOpenSettingsModel] = useState<{
+		modelName: string,
+		providerName: ProviderName,
+		type: 'autodetected' | 'custom' | 'default'
+	} | null>(null);
+
+	// States for add model functionality
+	const [isAddModelOpen, setIsAddModelOpen] = useState(false);
+	const [showCheckmark, setShowCheckmark] = useState(false);
+	const [userChosenProviderName, setUserChosenProviderName] = useState<ProviderName | null>(null);
+	const [modelName, setModelName] = useState<string>('');
+	const [errorString, setErrorString] = useState('');
 
 	// a dump of all the enabled providers' models
 	const modelDump: (VoidStatefulModelInfo & { providerName: ProviderName, providerEnabled: boolean })[] = []
-	for (let providerName of providerNames) {
+
+	// Use either filtered providers or all providers
+	const providersToShow = filteredProviders || providerNames;
+
+	for (let providerName of providersToShow) {
 		const providerSettings = settingsState.settingsOfProvider[providerName]
 		// if (!providerSettings.enabled) continue
 		modelDump.push(...providerSettings.models.map(model => ({ ...model, providerName, providerEnabled: !!providerSettings._didFillInProviderSettings })))
@@ -321,6 +404,34 @@ export const ModelDump = () => {
 	modelDump.sort((a, b) => {
 		return Number(b.providerEnabled) - Number(a.providerEnabled)
 	})
+
+	// Add model handler
+	const handleAddModel = () => {
+		if (!userChosenProviderName) {
+			setErrorString('Please select a provider.');
+			return;
+		}
+		if (!modelName) {
+			setErrorString('Please enter a model name.');
+			return;
+		}
+
+		// Check if model already exists
+		if (settingsState.settingsOfProvider[userChosenProviderName].models.find(m => m.modelName === modelName)) {
+			setErrorString(`This model already exists.`);
+			return;
+		}
+
+		settingsStateService.addModel(userChosenProviderName, modelName);
+		setShowCheckmark(true);
+		setTimeout(() => {
+			setShowCheckmark(false);
+			setIsAddModelOpen(false);
+			setUserChosenProviderName(null);
+			setModelName('');
+		}, 1500);
+		setErrorString('');
+	};
 
 	return <div className=''>
 		{modelDump.map((m, i) => {
@@ -335,32 +446,55 @@ export const ModelDump = () => {
 
 			const tooltipName = (
 				disabled ? `Add ${providerTitle} to enable`
-					: value === true ? 'Enabled'
-						: 'Disabled'
+					: value === true ? 'Show in Dropdown'
+						: 'Hide from Dropdown'
 			)
 
+
+			const detailAboutModel = type === 'autodetected' ?
+				<Asterisk size={14} className="inline-block align-text-top brightness-115 stroke-[2] text-[#0e70c0]" data-tooltip-id='void-tooltip' data-tooltip-place='right' data-tooltip-content='Detected locally' />
+				: type === 'custom' ?
+					<Asterisk size={14} className="inline-block align-text-top brightness-115 stroke-[2] text-[#0e70c0]" data-tooltip-id='void-tooltip' data-tooltip-place='right' data-tooltip-content='Custom model' />
+					: undefined
+
+			const hasOverrides = !!settingsState.overridesOfModel?.[providerName]?.[modelName]
+
 			return <div key={`${modelName}${providerName}`}
-				className={`flex items-center justify-between gap-4 hover:bg-black/10 dark:hover:bg-gray-300/10 py-1 px-3 rounded-sm overflow-hidden cursor-default truncate
+				className={`flex items-center justify-between gap-4 hover:bg-black/10 dark:hover:bg-gray-300/10 py-1 px-3 rounded-sm overflow-hidden cursor-default truncate group
 				`}
 			>
 				{/* left part is width:full */}
-				<div className={`flex-grow flex items-center gap-4`}>
+				<div className={`flex flex-grow items-center gap-4`}>
 					<span className='w-full max-w-32'>{isNewProviderName ? providerTitle : ''}</span>
-					<span className='w-fit truncate'>{modelName}</span>
+					<span className='w-fit max-w-[400px] truncate'>{modelName}</span>
 				</div>
-				{/* right part is anything that fits */}
-				<div className='flex items-center gap-4'
-				// data-tooltip-id='void-tooltip'
-				// data-tooltip-place='top'
-				// data-tooltip-content={disabled ? `${displayInfoOfProviderName(providerName).title} is disabled`
-				// 	: (isHidden ? `'${modelName}' won't appear in dropdowns` : ``)
-				// }
-				>
-					<span className='opacity-50 truncate'>{type === 'autodetected' ? '(detected locally)' : type === 'default' ? '' : '(custom model)'}</span>
 
+				{/* right part is anything that fits */}
+				<div className="flex items-center gap-2 w-fit">
+
+					{/* Advanced Settings button (gear). Hide entirely when provider/model disabled. */}
+					{disabled ? null : (
+						<div className="w-5 flex items-center justify-center">
+							<button
+								onClick={() => { setOpenSettingsModel({ modelName, providerName, type }) }}
+								data-tooltip-id='void-tooltip'
+								data-tooltip-place='right'
+								data-tooltip-content='Advanced Settings'
+								className={`${hasOverrides ? '' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}
+							>
+								<Plus size={12} className="text-void-fg-3 opacity-50" />
+							</button>
+						</div>
+					)}
+
+					{/* Blue star */}
+					{detailAboutModel}
+
+
+					{/* Switch */}
 					<VoidSwitch
 						value={value}
-						onChange={() => { settingsStateService.toggleModelHidden(providerName, modelName) }}
+						onChange={() => { settingsStateService.toggleModelHidden(providerName, modelName); }}
 						disabled={disabled}
 						size='sm'
 
@@ -369,12 +503,104 @@ export const ModelDump = () => {
 						data-tooltip-content={tooltipName}
 					/>
 
+					{/* X button */}
 					<div className={`w-5 flex items-center justify-center`}>
-						{type === 'default' || type === 'autodetected' ? null : <button onClick={() => { settingsStateService.deleteModel(providerName, modelName) }}><X className='size-4' /></button>}
+						{type === 'default' || type === 'autodetected' ? null : <button
+							onClick={() => { settingsStateService.deleteModel(providerName, modelName); }}
+							data-tooltip-id='void-tooltip'
+							data-tooltip-place='right'
+							data-tooltip-content='Delete'
+							className={`${hasOverrides ? '' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}
+						>
+							<X size={12} className="text-void-fg-3 opacity-50" />
+						</button>}
 					</div>
 				</div>
 			</div>
 		})}
+
+		{/* Add Model Section */}
+		{showCheckmark ? (
+			<div className="mt-4">
+				<AnimatedCheckmarkButton text='Added' className="bg-[#0e70c0] text-white px-3 py-1 rounded-sm" />
+			</div>
+		) : isAddModelOpen ? (
+			<div className="mt-4">
+				<form className="flex items-center gap-2">
+
+					{/* Provider dropdown */}
+					<ErrorBoundary>
+						<VoidCustomDropdownBox
+							options={providersToShow}
+							selectedOption={userChosenProviderName}
+							onChangeOption={(pn) => setUserChosenProviderName(pn)}
+							getOptionDisplayName={(pn) => pn ? displayInfoOfProviderName(pn).title : 'Provider Name'}
+							getOptionDropdownName={(pn) => pn ? displayInfoOfProviderName(pn).title : 'Provider Name'}
+							getOptionsEqual={(a, b) => a === b}
+							className="max-w-32 mx-2 w-full resize-none bg-void-bg-1 text-void-fg-1 placeholder:text-void-fg-3 border border-void-border-2 focus:border-void-border-1 py-1 px-2 rounded"
+							arrowTouchesText={false}
+						/>
+					</ErrorBoundary>
+
+					{/* Model name input */}
+					<ErrorBoundary>
+						<VoidSimpleInputBox
+							value={modelName}
+							compact={true}
+							onChangeValue={setModelName}
+							placeholder='Model Name'
+							className='max-w-32'
+						/>
+					</ErrorBoundary>
+
+					{/* Add button */}
+					<ErrorBoundary>
+						<AddButton
+							type='button'
+							disabled={!modelName || !userChosenProviderName}
+							onClick={handleAddModel}
+						/>
+					</ErrorBoundary>
+
+					{/* X button to cancel */}
+					<button
+						type="button"
+						onClick={() => {
+							setIsAddModelOpen(false);
+							setErrorString('');
+							setModelName('');
+							setUserChosenProviderName(null);
+						}}
+						className='text-void-fg-4'
+					>
+						<X className='size-4' />
+					</button>
+				</form>
+
+				{errorString && (
+					<div className='text-red-500 truncate whitespace-nowrap mt-1'>
+						{errorString}
+					</div>
+				)}
+			</div>
+		) : (
+			<div
+				className="text-void-fg-4 flex flex-nowrap text-nowrap items-center hover:brightness-110 cursor-pointer mt-4"
+				onClick={() => setIsAddModelOpen(true)}
+			>
+				<div className="flex items-center gap-1">
+					<Plus size={16} />
+					<span>Add a model</span>
+				</div>
+			</div>
+		)}
+
+		{/* Model Settings Dialog */}
+		<SimpleModelSettingsDialog
+			isOpen={openSettingsModel !== null}
+			onClose={() => setOpenSettingsModel(null)}
+			modelInfo={openSettingsModel}
+		/>
 	</div>
 }
 
@@ -396,14 +622,16 @@ const ProviderSetting = ({ providerName, settingName, subTextMd }: { providerNam
 		return
 	}
 
+	// Create a stable callback reference using useCallback with proper dependencies
+	const handleChangeValue = useCallback((newVal: string) => {
+		voidSettingsService.setSettingOfProvider(providerName, settingName, newVal)
+	}, [voidSettingsService, providerName, settingName]);
+
 	return <ErrorBoundary>
 		<div className='my-1'>
 			<VoidSimpleInputBox
 				value={settingValue}
-				onChangeValue={useCallback((newVal) => {
-					voidSettingsService.setSettingOfProvider(providerName, settingName, newVal)
-				}, [voidSettingsService, providerName, settingName])}
-				// placeholder={`${providerTitle} ${settingTitle} (${placeholder})`}
+				onChangeValue={handleChangeValue}
 				placeholder={`${settingTitle} (${placeholder})`}
 				passwordBlur={isPasswordField}
 				compact={true}
@@ -460,6 +688,7 @@ const ProviderSetting = ({ providerName, settingName, subTextMd }: { providerNam
 // 	</div >
 // }
 
+
 export const SettingsForProvider = ({ providerName, showProviderTitle, showProviderSuggestions }: { providerName: ProviderName, showProviderTitle: boolean, showProviderSuggestions: boolean }) => {
 	const voidSettingsState = useSettingsState()
 
@@ -505,8 +734,8 @@ export const SettingsForProvider = ({ providerName, showProviderTitle, showProvi
 
 			{showProviderSuggestions && needsModel ?
 				providerName === 'ollama' ?
-					<WarningBox text={`Please install an Ollama model. We'll auto-detect it.`} />
-					: <WarningBox text={`Please add a model for ${providerTitle} (Models section).`} />
+					<WarningBox className="pl-2 mb-4" text={`Please install an Ollama model. We'll auto-detect it.`} />
+					: <WarningBox className="pl-2 mb-4" text={`Please add a model for ${providerTitle} (Models section).`} />
 				: null}
 		</div>
 	</div >
@@ -589,7 +818,7 @@ const FastApplyMethodDropdown = () => {
 }
 
 
-export const OllamaSetupInstructions = () => {
+export const OllamaSetupInstructions = ({ sayWeAutoDetect }: { sayWeAutoDetect?: boolean }) => {
 	return <div className='prose-p:my-0 prose-ol:list-decimal prose-p:py-0 prose-ol:my-0 prose-ol:py-0 prose-span:my-0 prose-span:py-0 text-void-fg-3 text-sm list-decimal select-text'>
 		<div className=''><ChatMarkdownRender string={`Ollama Setup Instructions`} chatMessageLocation={undefined} /></div>
 		<div className=' pl-6'><ChatMarkdownRender string={`1. Download [Ollama](https://ollama.com/download).`} chatMessageLocation={undefined} /></div>
@@ -600,7 +829,7 @@ export const OllamaSetupInstructions = () => {
 		>
 			<ChatMarkdownRender string={`3. Run \`ollama pull your_model\` to install a model.`} chatMessageLocation={undefined} />
 		</div>
-		<div className=' pl-6'><ChatMarkdownRender string={`Void automatically detects locally running models and enables them.`} chatMessageLocation={undefined} /></div>
+		{sayWeAutoDetect && <div className=' pl-6'><ChatMarkdownRender string={`Void automatically detects locally running models and enables them.`} chatMessageLocation={undefined} /></div>}
 	</div>
 }
 
@@ -618,137 +847,7 @@ const RedoOnboardingButton = ({ className }: { className?: string }) => {
 }
 
 
-type TransferEditorType = 'VS Code' | 'Cursor' | 'Windsurf'
-// https://github.com/VSCodium/vscodium/blob/master/docs/index.md#migrating-from-visual-studio-code-to-vscodium
-// https://code.visualstudio.com/docs/editor/extension-marketplace#_where-are-extensions-installed
-type TransferFilesInfo = { from: URI, to: URI }[]
-const transferTheseFilesOfOS = (os: 'mac' | 'windows' | 'linux' | null, fromEditor: TransferEditorType = 'VS Code'): TransferFilesInfo => {
-	if (os === null)
-		throw new Error(`One-click switch is not possible in this environment.`)
-	if (os === 'mac') {
-		const homeDir = env['HOME']
-		if (!homeDir) throw new Error(`$HOME not found`)
 
-		if (fromEditor === 'VS Code') {
-			return [{
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, 'Library', 'Application Support', 'Code', 'User', 'settings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, 'Library', 'Application Support', 'Void', 'User', 'settings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, 'Library', 'Application Support', 'Code', 'User', 'keybindings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, 'Library', 'Application Support', 'Void', 'User', 'keybindings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.vscode', 'extensions'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.void-editor', 'extensions'),
-			}]
-		} else if (fromEditor === 'Cursor') {
-			return [{
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, 'Library', 'Application Support', 'Cursor', 'User', 'settings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, 'Library', 'Application Support', 'Void', 'User', 'settings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, 'Library', 'Application Support', 'Cursor', 'User', 'keybindings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, 'Library', 'Application Support', 'Void', 'User', 'keybindings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.cursor', 'extensions'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.void-editor', 'extensions'),
-			}]
-		} else if (fromEditor === 'Windsurf') {
-			return [{
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, 'Library', 'Application Support', 'Windsurf', 'User', 'settings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, 'Library', 'Application Support', 'Void', 'User', 'settings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, 'Library', 'Application Support', 'Windsurf', 'User', 'keybindings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, 'Library', 'Application Support', 'Void', 'User', 'keybindings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.windsurf', 'extensions'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.void-editor', 'extensions'),
-			}]
-		}
-	}
-
-	if (os === 'linux') {
-		const homeDir = env['HOME']
-		if (!homeDir) throw new Error(`variable for $HOME location not found`)
-
-		if (fromEditor === 'VS Code') {
-			return [{
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.config', 'Code', 'User', 'settings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.config', 'Void', 'User', 'settings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.config', 'Code', 'User', 'keybindings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.config', 'Void', 'User', 'keybindings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.vscode', 'extensions'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.void-editor', 'extensions'),
-			}]
-		} else if (fromEditor === 'Cursor') {
-			return [{
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.config', 'Cursor', 'User', 'settings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.config', 'Void', 'User', 'settings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.config', 'Cursor', 'User', 'keybindings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.config', 'Void', 'User', 'keybindings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.cursor', 'extensions'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.void-editor', 'extensions'),
-			}]
-		} else if (fromEditor === 'Windsurf') {
-			return [{
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.config', 'Windsurf', 'User', 'settings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.config', 'Void', 'User', 'settings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.config', 'Windsurf', 'User', 'keybindings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.config', 'Void', 'User', 'keybindings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.windsurf', 'extensions'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), homeDir, '.void-editor', 'extensions'),
-			}]
-		}
-	}
-
-	if (os === 'windows') {
-		const appdata = env['APPDATA']
-		if (!appdata) throw new Error(`variable for %APPDATA% location not found`)
-		const userprofile = env['USERPROFILE']
-		if (!userprofile) throw new Error(`variable for %USERPROFILE% location not found`)
-
-		if (fromEditor === 'VS Code') {
-			return [{
-				from: URI.joinPath(URI.from({ scheme: 'file' }), appdata, 'Code', 'User', 'settings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), appdata, 'Void', 'User', 'settings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), appdata, 'Code', 'User', 'keybindings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), appdata, 'Void', 'User', 'keybindings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), userprofile, '.vscode', 'extensions'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), userprofile, '.void-editor', 'extensions'),
-			}]
-		} else if (fromEditor === 'Cursor') {
-			return [{
-				from: URI.joinPath(URI.from({ scheme: 'file' }), appdata, 'Cursor', 'User', 'settings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), appdata, 'Void', 'User', 'settings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), appdata, 'Cursor', 'User', 'keybindings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), appdata, 'Void', 'User', 'keybindings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), userprofile, '.cursor', 'extensions'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), userprofile, '.void-editor', 'extensions'),
-			}]
-		} else if (fromEditor === 'Windsurf') {
-			return [{
-				from: URI.joinPath(URI.from({ scheme: 'file' }), appdata, 'Windsurf', 'User', 'settings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), appdata, 'Void', 'User', 'settings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), appdata, 'Windsurf', 'User', 'keybindings.json'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), appdata, 'Void', 'User', 'keybindings.json'),
-			}, {
-				from: URI.joinPath(URI.from({ scheme: 'file' }), userprofile, '.windsurf', 'extensions'),
-				to: URI.joinPath(URI.from({ scheme: 'file' }), userprofile, '.void-editor', 'extensions'),
-			}]
-		}
-	}
-
-	throw new Error(`os '${os}' not recognized or editor type '${fromEditor}' not supported for this OS`)
-}
 
 
 
@@ -781,73 +880,18 @@ export const ToolApprovalTypeSwitch = ({ approvalType, size, desc }: { approvalT
 
 export const OneClickSwitchButton = ({ fromEditor = 'VS Code', className = '' }: { fromEditor?: TransferEditorType, className?: string }) => {
 	const accessor = useAccessor()
-	const fileService = accessor.get('IFileService')
+	const extensionTransferService = accessor.get('IExtensionTransferService')
 
 	const [transferState, setTransferState] = useState<{ type: 'done', error?: string } | { type: | 'loading' | 'justfinished' }>({ type: 'done' })
 
-	let transferTheseFiles: TransferFilesInfo = [];
-	let editorError: string | null = null;
 
-	try {
-		transferTheseFiles = transferTheseFilesOfOS(os, fromEditor)
-	} catch (e) {
-		editorError = e + ''
-	}
-
-	if (transferTheseFiles.length === 0)
-		return <>
-			<WarningBox text={editorError ?? `Transfer from ${fromEditor} not available.`} />
-		</>
 
 	const onClick = async () => {
 		if (transferState.type !== 'done') return
 
 		setTransferState({ type: 'loading' })
 
-		let errAcc = ''
-		// Define extensions to skip when transferring
-		const extensionBlacklist = [
-			// ignore extensions
-			'ms-vscode-remote.remote-ssh',
-			'ms-vscode-remote.remote-wsl',
-			// ignore other AI copilots that could conflict with Void keybindings
-			'sourcegraph.cody-ai',
-			'continue.continue',
-			'codeium.codeium',
-			'saoudrizwan.claude-dev', // cline
-			'rooveterinaryinc.roo-cline', // roo
-		];
-		for (const { from, to } of transferTheseFiles) {
-			try {
-				// find a blacklisted item
-				const isBlacklisted = extensionBlacklist.find(blacklistItem => {
-					return from.fsPath?.includes(blacklistItem)
-				})
-				if (isBlacklisted) continue
-
-			} catch { }
-
-			console.log('transferring', from, to)
-			// Check if the source file exists before attempting to copy
-			try {
-				const exists = await fileService.exists(from)
-				if (exists) {
-					// Ensure the destination directory exists
-					const toParent = URI.joinPath(to, '..')
-					const toParentExists = await fileService.exists(toParent)
-					if (!toParentExists) {
-						await fileService.createFolder(toParent)
-					}
-					await fileService.copy(from, to, true)
-				} else {
-					console.log(`Skipping file that doesn't exist: ${from.toString()}`)
-				}
-			}
-			catch (e) {
-				console.error('Error copying file:', e)
-				errAcc += `Error copying ${from.toString()}: ${e}\n`
-			}
-		}
+		const errAcc = await extensionTransferService.transferExtensions(os, fromEditor)
 
 		// Even if some files were missing, consider it a success if no actual errors occurred
 		const hadError = !!errAcc
@@ -875,8 +919,130 @@ export const OneClickSwitchButton = ({ fromEditor = 'VS Code', className = '' }:
 
 // full settings
 
+// MCP Server component
+const MCPServerComponent = ({ name, server }: { name: string, server: MCPServer }) => {
+	const accessor = useAccessor();
+	const mcpService = accessor.get('IMCPService');
+
+	const voidSettings = useSettingsState()
+	const isOn = voidSettings.mcpUserStateOfName[name]?.isOn
+
+	const removeUniquePrefix = (name: string) => name.split('_').slice(1).join('_')
+
+	return (
+		<div className="border border-void-border-2 bg-void-bg-1 py-3 px-4 rounded-sm my-2">
+			<div className="flex items-center justify-between">
+				{/* Left side - status and name */}
+				<div className="flex items-center gap-2">
+					{/* Status indicator */}
+					<div className={`w-2 h-2 rounded-full
+						${server.status === 'success' ? 'bg-green-500'
+							: server.status === 'error' ? 'bg-red-500'
+								: server.status === 'loading' ? 'bg-yellow-500'
+									: server.status === 'offline' ? 'bg-void-fg-3'
+										: ''}
+					`}></div>
+
+					{/* Server name */}
+					<div className="text-sm font-medium text-void-fg-1">{name}</div>
+				</div>
+
+				{/* Right side - power toggle switch */}
+				<VoidSwitch
+					value={isOn ?? false}
+					size='xs'
+					disabled={server.status === 'error'}
+					onChange={() => mcpService.toggleServerIsOn(name, !isOn)}
+				/>
+			</div>
+
+			{/* Tools section */}
+			{isOn && (
+				<div className="mt-3">
+					<div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
+						{(server.tools ?? []).length > 0 ? (
+							(server.tools ?? []).map((tool: { name: string; description?: string }) => (
+								<span
+									key={tool.name}
+									className="px-2 py-0.5 bg-void-bg-2 text-void-fg-3 rounded-sm text-xs"
+
+									data-tooltip-id='void-tooltip'
+									data-tooltip-content={tool.description || ''}
+									data-tooltip-class-name='void-max-w-[300px]'
+								>
+									{removeUniquePrefix(tool.name)}
+								</span>
+							))
+						) : (
+							<span className="text-xs text-void-fg-3">No tools available</span>
+						)}
+					</div>
+				</div>
+			)}
+
+			{/* Command badge */}
+			{isOn && server.command && (
+				<div className="mt-3">
+					<div className="text-xs text-void-fg-3 mb-1">Command:</div>
+					<div className="px-2 py-1 bg-void-bg-2 text-xs font-mono overflow-x-auto whitespace-nowrap text-void-fg-2 rounded-sm">
+						{server.command}
+					</div>
+				</div>
+			)}
+
+			{/* Error message if present */}
+			{server.error && (
+				<div className="mt-3">
+					<WarningBox text={server.error} />
+				</div>
+			)}
+		</div>
+	);
+};
+
+// Main component that renders the list of servers
+const MCPServersList = () => {
+	const mcpServiceState = useMCPServiceState()
+
+	let content: React.ReactNode
+	if (mcpServiceState.error) {
+		content = <div className="text-void-fg-3 text-sm mt-2">
+			{mcpServiceState.error}
+		</div>
+	}
+	else {
+		const entries = Object.entries(mcpServiceState.mcpServerOfName)
+		if (entries.length === 0) {
+			content = <div className="text-void-fg-3 text-sm mt-2">
+				No servers found
+			</div>
+		}
+		else {
+			content = entries.map(([name, server]) => (
+				<MCPServerComponent key={name} name={name} server={server} />
+			))
+		}
+	}
+
+	return <div className="my-2">{content}</div>
+};
+
 export const Settings = () => {
 	const isDark = useIsDark()
+	// ─── sidebar nav ──────────────────────────
+	const [selectedSection, setSelectedSection] =
+		useState<Tab>('models');
+
+	const navItems: { tab: Tab; label: string }[] = [
+		{ tab: 'models', label: 'Models' },
+		{ tab: 'localProviders', label: 'Local Providers' },
+		{ tab: 'providers', label: 'Other Providers' },
+		{ tab: 'featureOptions', label: 'Feature Options' },
+		{ tab: 'general', label: 'General' },
+		{ tab: 'mcp', label: 'MCP' },
+		{ tab: 'all', label: 'All Settings' },
+	];
+	const shouldShowTab = (tab: Tab) => selectedSection === 'all' || selectedSection === tab;
 	const accessor = useAccessor()
 	const commandService = accessor.get('ICommandService')
 	const environmentService = accessor.get('IEnvironmentService')
@@ -885,6 +1051,7 @@ export const Settings = () => {
 	const voidSettingsService = accessor.get('IVoidSettingsService')
 	const chatThreadsService = accessor.get('IChatThreadService')
 	const notificationService = accessor.get('INotificationService')
+	const mcpService = accessor.get('IMCPService')
 
 	const onDownload = (t: 'Chats' | 'Settings') => {
 		let dataStr: string
@@ -950,281 +1117,417 @@ export const Settings = () => {
 	}
 
 
-	return <div className={`@@void-scope ${isDark ? 'dark' : ''}`} style={{ height: '100%', width: '100%' }}>
-		<div className='overflow-y-auto w-full h-full px-10 py-10 select-none'>
+	return (
+		<div className={`@@void-scope ${isDark ? 'dark' : ''}`} style={{ height: '100%', width: '100%', overflow: 'auto' }}>
+			<div className="flex flex-col md:flex-row w-full gap-6 max-w-[900px] mx-auto mb-32" style={{ minHeight: '80vh' }}>
+				{/* ──────────────  SIDEBAR  ────────────── */}
 
-			<div className='max-w-xl mx-auto'>
+				<aside className="md:w-1/4 w-full p-6 shrink-0">
+					{/* vertical tab list */}
+					<div className="flex flex-col gap-2 mt-12">
+						{navItems.map(({ tab, label }) => (
+							<button
+								key={tab}
+								onClick={() => {
+									if (tab === 'all') {
+										setSelectedSection('all');
+										window.scrollTo({ top: 0, behavior: 'smooth' });
+									} else {
+										setSelectedSection(tab);
+									}
+								}}
+								className={`
+          py-2 px-4 rounded-md text-left transition-all duration-200
+          ${selectedSection === tab
+										? 'bg-[#0e70c0]/80 text-white font-medium shadow-sm'
+										: 'bg-void-bg-2 hover:bg-void-bg-2/80 text-void-fg-1'}
+        `}
+							>
+								{label}
+							</button>
+						))}
+					</div>
+				</aside>
 
-				<h1 className='text-2xl w-full'>{`Void's Settings`}</h1>
-
-				{/* separator */}
-				<div className='w-full h-[1px] my-4' />
-
-				{/* Models section (formerly FeaturesTab) */}
-
-				{/* Models section (formerly FeaturesTab) */}
-				<ErrorBoundary>
-					<h2 className={`text-3xl mb-2`}>Models</h2>
-					<ModelDump />
-					<AddModelInputBox className='mt-4' compact />
-					<RedoOnboardingButton className='mt-2 mb-4' />
-					<AutoDetectLocalModelsToggle />
-					<RefreshableModels />
-				</ErrorBoundary>
-
-
-				<h2 className={`text-3xl mb-2 mt-12`}>Local Providers</h2>
-				<h3 className={`text-void-fg-3 mb-2`}>{`Void can access any model that you host locally. We automatically detect your local models by default.`}</h3>
-
-				<div className='opacity-80 mb-4'>
-					<OllamaSetupInstructions />
-				</div>
-
-				<ErrorBoundary>
-					<VoidProviderSettings providerNames={localProviderNames} />
-				</ErrorBoundary>
-
-				<h2 className={`text-3xl mb-2 mt-12`}>Providers</h2>
-				<h3 className={`text-void-fg-3 mb-2`}>{`Void can access models from Anthropic, OpenAI, OpenRouter, and more.`}</h3>
-				<ErrorBoundary>
-					<VoidProviderSettings providerNames={nonlocalProviderNames} />
-				</ErrorBoundary>
+				{/* ───────────── MAIN PANE ───────────── */}
+				<main className="flex-1 p-6 select-none">
 
 
 
-				<h2 className={`text-3xl mt-12`}>Feature Options</h2>
-				{/* L1 */}
+					<div className='max-w-3xl'>
 
-				<div className='flex items-start justify-around my-4 gap-x-8'>
-					<ErrorBoundary>
-						{/* FIM */}
-						<div className='w-full'>
-							<h4 className={`text-base`}>{displayInfoOfFeatureName('Autocomplete')}</h4>
-							<div className='text-sm italic text-void-fg-3 mt-1 mb-4'>
-								<span>
-									Experimental.{' '}
-								</span>
-								<span
-									className='hover:brightness-110'
-									data-tooltip-id='void-tooltip'
-									data-tooltip-content='We recommend using qwen2.5-coder:1.5b with Ollama.'
-									data-tooltip-class-name='void-max-w-[20px]'
-								>
-									Only works with FIM models.*
-								</span>
+						<h1 className='text-2xl w-full'>{`Void's Settings`}</h1>
+
+						<div className='w-full h-[1px] my-2' />
+
+						{/* Models section (formerly FeaturesTab) */}
+						<ErrorBoundary>
+							<RedoOnboardingButton />
+						</ErrorBoundary>
+
+						<div className='w-full h-[1px] my-4' />
+
+						{/* All sections in flex container with gap-12 */}
+						<div className='flex flex-col gap-12'>
+							{/* Models section (formerly FeaturesTab) */}
+							<div className={shouldShowTab('models') ? `` : 'hidden'}>
+								<ErrorBoundary>
+									<h2 className={`text-3xl mb-2`}>Models</h2>
+									<ModelDump />
+									<div className='w-full h-[1px] my-4' />
+									<AutoDetectLocalModelsToggle />
+									<RefreshableModels />
+								</ErrorBoundary>
 							</div>
 
-							<div className='my-2'>
-								{/* Enable Switch */}
+							{/* Local Providers section */}
+							<div className={shouldShowTab('localProviders') ? `` : 'hidden'}>
 								<ErrorBoundary>
-									<div className='flex items-center gap-x-2 my-2'>
-										<VoidSwitch
-											size='xs'
-											value={settingsState.globalSettings.enableAutocomplete}
-											onChange={(newVal) => voidSettingsService.setGlobalSetting('enableAutocomplete', newVal)}
-										/>
-										<span className='text-void-fg-3 text-xs pointer-events-none'>{settingsState.globalSettings.enableAutocomplete ? 'Enabled' : 'Disabled'}</span>
+									<h2 className={`text-3xl mb-2`}>Local Providers</h2>
+									<h3 className={`text-void-fg-3 mb-2`}>{`Void can access any model that you host locally. We automatically detect your local models by default.`}</h3>
+
+									<div className='opacity-80 mb-4'>
+										<OllamaSetupInstructions sayWeAutoDetect={true} />
+									</div>
+
+									<VoidProviderSettings providerNames={localProviderNames} />
+								</ErrorBoundary>
+							</div>
+
+							{/* Other Providers section */}
+							<div className={shouldShowTab('providers') ? `` : 'hidden'}>
+								<ErrorBoundary>
+									<h2 className={`text-3xl mb-2`}>Other Providers</h2>
+									<h3 className={`text-void-fg-3 mb-2`}>{`Void can access models from Anthropic, OpenAI, OpenRouter, and more.`}</h3>
+
+									<VoidProviderSettings providerNames={nonlocalProviderNames} />
+								</ErrorBoundary>
+							</div>
+
+							{/* Feature Options section */}
+							<div className={shouldShowTab('featureOptions') ? `` : 'hidden'}>
+								<ErrorBoundary>
+									<h2 className={`text-3xl mb-2`}>Feature Options</h2>
+
+									<div className='flex flex-col gap-y-8 my-4'>
+										<ErrorBoundary>
+											{/* FIM */}
+											<div>
+												<h4 className={`text-base`}>{displayInfoOfFeatureName('Autocomplete')}</h4>
+												<div className='text-sm italic text-void-fg-3 mt-1'>
+													<span>
+														Experimental.{' '}
+													</span>
+													<span
+														className='hover:brightness-110'
+														data-tooltip-id='void-tooltip'
+														data-tooltip-content='We recommend using the largest qwen2.5-coder model you can with Ollama (try qwen2.5-coder:3b).'
+														data-tooltip-class-name='void-max-w-[20px]'
+													>
+														Only works with FIM models.*
+													</span>
+												</div>
+
+												<div className='my-2'>
+													{/* Enable Switch */}
+													<ErrorBoundary>
+														<div className='flex items-center gap-x-2 my-2'>
+															<VoidSwitch
+																size='xs'
+																value={settingsState.globalSettings.enableAutocomplete}
+																onChange={(newVal) => voidSettingsService.setGlobalSetting('enableAutocomplete', newVal)}
+															/>
+															<span className='text-void-fg-3 text-xs pointer-events-none'>{settingsState.globalSettings.enableAutocomplete ? 'Enabled' : 'Disabled'}</span>
+														</div>
+													</ErrorBoundary>
+
+													{/* Model Dropdown */}
+													<ErrorBoundary>
+														<div className={`my-2 ${!settingsState.globalSettings.enableAutocomplete ? 'hidden' : ''}`}>
+															<ModelDropdown featureName={'Autocomplete'} className='text-xs text-void-fg-3 bg-void-bg-1 border border-void-border-1 rounded p-0.5 px-1' />
+														</div>
+													</ErrorBoundary>
+
+												</div>
+
+											</div>
+										</ErrorBoundary>
+
+										{/* Apply */}
+										<ErrorBoundary>
+
+											<div className='w-full'>
+												<h4 className={`text-base`}>{displayInfoOfFeatureName('Apply')}</h4>
+												<div className='text-sm italic text-void-fg-3 mt-1'>Settings that control the behavior of the Apply button.</div>
+
+												<div className='my-2'>
+													{/* Sync to Chat Switch */}
+													<div className='flex items-center gap-x-2 my-2'>
+														<VoidSwitch
+															size='xs'
+															value={settingsState.globalSettings.syncApplyToChat}
+															onChange={(newVal) => voidSettingsService.setGlobalSetting('syncApplyToChat', newVal)}
+														/>
+														<span className='text-void-fg-3 text-xs pointer-events-none'>{settingsState.globalSettings.syncApplyToChat ? 'Same as Chat model' : 'Different model'}</span>
+													</div>
+
+													{/* Model Dropdown */}
+													<div className={`my-2 ${settingsState.globalSettings.syncApplyToChat ? 'hidden' : ''}`}>
+														<ModelDropdown featureName={'Apply'} className='text-xs text-void-fg-3 bg-void-bg-1 border border-void-border-1 rounded p-0.5 px-1' />
+													</div>
+												</div>
+
+
+												<div className='my-2'>
+													{/* Fast Apply Method Dropdown */}
+													<div className='flex items-center gap-x-2 my-2'>
+														<FastApplyMethodDropdown />
+													</div>
+												</div>
+
+											</div>
+										</ErrorBoundary>
+
+
+
+
+										{/* Tools Section */}
+										<div>
+											<h4 className={`text-base`}>Tools</h4>
+											<div className='text-sm italic text-void-fg-3 mt-1'>{`Tools are functions that LLMs can call. Some tools require user approval.`}</div>
+
+											<div className='my-2'>
+												{/* Auto Accept Switch */}
+												<ErrorBoundary>
+													{[...toolApprovalTypes].map((approvalType) => {
+														return <div key={approvalType} className="flex items-center gap-x-2 my-2">
+															<ToolApprovalTypeSwitch size='xs' approvalType={approvalType} desc={`Auto-approve ${approvalType}`} />
+														</div>
+													})}
+
+												</ErrorBoundary>
+
+												{/* Tool Lint Errors Switch */}
+												<ErrorBoundary>
+
+													<div className='flex items-center gap-x-2 my-2'>
+														<VoidSwitch
+															size='xs'
+															value={settingsState.globalSettings.includeToolLintErrors}
+															onChange={(newVal) => voidSettingsService.setGlobalSetting('includeToolLintErrors', newVal)}
+														/>
+														<span className='text-void-fg-3 text-xs pointer-events-none'>{settingsState.globalSettings.includeToolLintErrors ? 'Fix lint errors' : `Fix lint errors`}</span>
+													</div>
+												</ErrorBoundary>
+
+												{/* Auto Accept LLM Changes Switch */}
+												<ErrorBoundary>
+													<div className='flex items-center gap-x-2 my-2'>
+														<VoidSwitch
+															size='xs'
+															value={settingsState.globalSettings.autoAcceptLLMChanges}
+															onChange={(newVal) => voidSettingsService.setGlobalSetting('autoAcceptLLMChanges', newVal)}
+														/>
+														<span className='text-void-fg-3 text-xs pointer-events-none'>Auto-accept LLM changes</span>
+													</div>
+												</ErrorBoundary>
+											</div>
+										</div>
+
+
+
+										<div className='w-full'>
+											<h4 className={`text-base`}>Editor</h4>
+											<div className='text-sm italic text-void-fg-3 mt-1'>{`Settings that control the visibility of Void suggestions in the code editor.`}</div>
+
+											<div className='my-2'>
+												{/* Auto Accept Switch */}
+												<ErrorBoundary>
+													<div className='flex items-center gap-x-2 my-2'>
+														<VoidSwitch
+															size='xs'
+															value={settingsState.globalSettings.showInlineSuggestions}
+															onChange={(newVal) => voidSettingsService.setGlobalSetting('showInlineSuggestions', newVal)}
+														/>
+														<span className='text-void-fg-3 text-xs pointer-events-none'>{settingsState.globalSettings.showInlineSuggestions ? 'Show suggestions on select' : 'Show suggestions on select'}</span>
+													</div>
+												</ErrorBoundary>
+											</div>
+										</div>
+
+										{/* SCM */}
+										<ErrorBoundary>
+
+											<div className='w-full'>
+												<h4 className={`text-base`}>{displayInfoOfFeatureName('SCM')}</h4>
+												<div className='text-sm italic text-void-fg-3 mt-1'>Settings that control the behavior of the commit message generator.</div>
+
+												<div className='my-2'>
+													{/* Sync to Chat Switch */}
+													<div className='flex items-center gap-x-2 my-2'>
+														<VoidSwitch
+															size='xs'
+															value={settingsState.globalSettings.syncSCMToChat}
+															onChange={(newVal) => voidSettingsService.setGlobalSetting('syncSCMToChat', newVal)}
+														/>
+														<span className='text-void-fg-3 text-xs pointer-events-none'>{settingsState.globalSettings.syncSCMToChat ? 'Same as Chat model' : 'Different model'}</span>
+													</div>
+
+													{/* Model Dropdown */}
+													<div className={`my-2 ${settingsState.globalSettings.syncSCMToChat ? 'hidden' : ''}`}>
+														<ModelDropdown featureName={'SCM'} className='text-xs text-void-fg-3 bg-void-bg-1 border border-void-border-1 rounded p-0.5 px-1' />
+													</div>
+												</div>
+
+											</div>
+										</ErrorBoundary>
 									</div>
 								</ErrorBoundary>
+							</div>
 
-								{/* Model Dropdown */}
-								<ErrorBoundary>
-									<div className={`my-2 ${!settingsState.globalSettings.enableAutocomplete ? 'hidden' : ''}`}>
-										<ModelDropdown featureName={'Autocomplete'} className='text-xs text-void-fg-3 bg-void-bg-1 border border-void-border-1 rounded p-0.5 px-1' />
+							{/* General section */}
+							<div className={`${shouldShowTab('general') ? `` : 'hidden'} flex flex-col gap-12`}>
+								{/* One-Click Switch section */}
+								<div>
+									<ErrorBoundary>
+										<h2 className='text-3xl mb-2'>One-Click Switch</h2>
+										<h4 className='text-void-fg-3 mb-4'>{`Transfer your editor settings into Void.`}</h4>
+
+										<div className='flex flex-col gap-2'>
+											<OneClickSwitchButton className='w-48' fromEditor="VS Code" />
+											<OneClickSwitchButton className='w-48' fromEditor="Cursor" />
+											<OneClickSwitchButton className='w-48' fromEditor="Windsurf" />
+										</div>
+									</ErrorBoundary>
+								</div>
+
+								{/* Import/Export section */}
+								<div>
+									<h2 className='text-3xl mb-2'>Import/Export</h2>
+									<h4 className='text-void-fg-3 mb-4'>{`Transfer Void's settings and chats in and out of Void.`}</h4>
+									<div className='flex flex-col gap-8'>
+										{/* Settings Subcategory */}
+										<div className='flex flex-col gap-2 max-w-48 w-full'>
+											<input key={2 * s} ref={fileInputSettingsRef} type='file' accept='.json' className='hidden' onChange={handleUpload('Settings')} />
+											<VoidButtonBgDarken className='px-4 py-1 w-full' onClick={() => { fileInputSettingsRef.current?.click() }}>
+												Import Settings
+											</VoidButtonBgDarken>
+											<VoidButtonBgDarken className='px-4 py-1 w-full' onClick={() => onDownload('Settings')}>
+												Export Settings
+											</VoidButtonBgDarken>
+											<ConfirmButton className='px-4 py-1 w-full' onConfirm={() => { voidSettingsService.resetState(); }}>
+												Reset Settings
+											</ConfirmButton>
+										</div>
+										{/* Chats Subcategory */}
+										<div className='flex flex-col gap-2 w-full max-w-48'>
+											<input key={2 * s + 1} ref={fileInputChatsRef} type='file' accept='.json' className='hidden' onChange={handleUpload('Chats')} />
+											<VoidButtonBgDarken className='px-4 py-1 w-full' onClick={() => { fileInputChatsRef.current?.click() }}>
+												Import Chats
+											</VoidButtonBgDarken>
+											<VoidButtonBgDarken className='px-4 py-1 w-full' onClick={() => onDownload('Chats')}>
+												Export Chats
+											</VoidButtonBgDarken>
+											<ConfirmButton className='px-4 py-1 w-full' onConfirm={() => { chatThreadsService.resetState(); }}>
+												Reset Chats
+											</ConfirmButton>
+										</div>
 									</div>
-								</ErrorBoundary>
-
-							</div>
-
-						</div>
-					</ErrorBoundary>
-
-					{/* Apply */}
-					<ErrorBoundary>
-
-						<div className='w-full'>
-							<h4 className={`text-base`}>{displayInfoOfFeatureName('Apply')}</h4>
-							<div className='text-sm italic text-void-fg-3 mt-1 mb-4'>Settings that control the behavior of the Apply button and the Edit tool.</div>
-
-							<div className='my-2'>
-								{/* Sync to Chat Switch */}
-								<div className='flex items-center gap-x-2 my-2'>
-									<VoidSwitch
-										size='xs'
-										value={settingsState.globalSettings.syncApplyToChat}
-										onChange={(newVal) => voidSettingsService.setGlobalSetting('syncApplyToChat', newVal)}
-									/>
-									<span className='text-void-fg-3 text-xs pointer-events-none'>{settingsState.globalSettings.syncApplyToChat ? 'Same as Chat model' : 'Different model'}</span>
 								</div>
 
-								{/* Model Dropdown */}
-								<div className={`my-2 ${settingsState.globalSettings.syncApplyToChat ? 'hidden' : ''}`}>
-									<ModelDropdown featureName={'Apply'} className='text-xs text-void-fg-3 bg-void-bg-1 border border-void-border-1 rounded p-0.5 px-1' />
+
+
+								{/* Built-in Settings section */}
+								<div>
+									<h2 className={`text-3xl mb-2`}>Built-in Settings</h2>
+									<h4 className={`text-void-fg-3 mb-4`}>{`IDE settings, keyboard settings, and theme customization.`}</h4>
+
+									<ErrorBoundary>
+										<div className='flex flex-col gap-2 justify-center max-w-48 w-full'>
+											<VoidButtonBgDarken className='px-4 py-1' onClick={() => { commandService.executeCommand('workbench.action.openSettings') }}>
+												General Settings
+											</VoidButtonBgDarken>
+											<VoidButtonBgDarken className='px-4 py-1' onClick={() => { commandService.executeCommand('workbench.action.openGlobalKeybindings') }}>
+												Keyboard Settings
+											</VoidButtonBgDarken>
+											<VoidButtonBgDarken className='px-4 py-1' onClick={() => { commandService.executeCommand('workbench.action.selectTheme') }}>
+												Theme Settings
+											</VoidButtonBgDarken>
+											<VoidButtonBgDarken className='px-4 py-1' onClick={() => { nativeHostService.showItemInFolder(environmentService.logsHome.fsPath) }}>
+												Open Logs
+											</VoidButtonBgDarken>
+										</div>
+									</ErrorBoundary>
 								</div>
-							</div>
 
 
-							<div className='my-2'>
-								{/* Fast Apply Method Dropdown */}
-								<div className='flex items-center gap-x-2 my-2'>
-									<FastApplyMethodDropdown />
-								</div>
-							</div>
-
-						</div>
-					</ErrorBoundary>
-
-				</div>
-
-
-
-				{/* L2 */}
-
-				<div className='flex items-start justify-around my-4 gap-x-8'>
-
-					{/* Tools Section */}
-					<div className='w-full'>
-						<h4 className={`text-base`}>Tools</h4>
-						<div className='text-sm italic text-void-fg-3 mt-1 mb-4'>{`Tools are functions that LLMs can call. Some tools require user approval.`}</div>
-
-						<div className='my-2'>
-							{/* Auto Accept Switch */}
-							<ErrorBoundary>
-								{[...toolApprovalTypes].map((approvalType) => {
-									return <div key={approvalType} className="flex items-center gap-x-2 my-2">
-										<ToolApprovalTypeSwitch size='xs' approvalType={approvalType} desc={`Auto-approve ${approvalType}`} />
-									</div>
-								})}
-
-							</ErrorBoundary>
-
-							{/* Tool Lint Errors Switch */}
-							<ErrorBoundary>
-
-								<div className='flex items-center gap-x-2 my-2'>
-									<VoidSwitch
-										size='xs'
-										value={settingsState.globalSettings.includeToolLintErrors}
-										onChange={(newVal) => voidSettingsService.setGlobalSetting('includeToolLintErrors', newVal)}
-									/>
-									<span className='text-void-fg-3 text-xs pointer-events-none'>{settingsState.globalSettings.includeToolLintErrors ? 'Fix lint errors' : `Fix lint errors`}</span>
-								</div>
-							</ErrorBoundary>
-						</div>
-					</div>
-
-
-
-					<div className='w-full'>
-						<h4 className={`text-base`}>Editor</h4>
-						<div className='text-sm italic text-void-fg-3 mt-1 mb-4'>{`Settings that control the visibility of suggestions and widgets in the code editor.`}</div>
-
-						<div className='my-2'>
-							{/* Auto Accept Switch */}
-							<ErrorBoundary>
-								<div className='flex items-center gap-x-2 my-2'>
-									<VoidSwitch
-										size='xs'
-										value={settingsState.globalSettings.showInlineSuggestions}
-										onChange={(newVal) => voidSettingsService.setGlobalSetting('showInlineSuggestions', newVal)}
-									/>
-									<span className='text-void-fg-3 text-xs pointer-events-none'>{settingsState.globalSettings.showInlineSuggestions ? 'Show suggestions on select' : 'Show suggestions on select'}</span>
-								</div>
-							</ErrorBoundary>
-						</div>
-					</div>
-				</div>
-
-
-				{/* General section (formerly GeneralTab) */}
-				<div className='mt-12'>
-					<ErrorBoundary>
-						<h2 className='text-3xl mb-2 mt-12'>One-Click Switch</h2>
-						<h4 className='text-void-fg-3 mb-4'>{`Transfer your settings from another editor to Void in one click.`}</h4>
-
-						<div className='flex flex-col gap-2'>
-							<OneClickSwitchButton className='w-48' fromEditor="VS Code" />
-							<OneClickSwitchButton className='w-48' fromEditor="Cursor" />
-							<OneClickSwitchButton className='w-48' fromEditor="Windsurf" />
-						</div>
-					</ErrorBoundary>
-				</div>
-
-				{/* Import/Export section, as its own block right after One-Click Switch */}
-				<div className='mt-12'>
-					<h2 className='text-3xl mb-2'>Import/Export</h2>
-					<div className='flex gap-8'>
-						{/* Settings Subcategory */}
-						<div className='flex flex-col gap-2 max-w-48 w-full'>
-							<h3 className='text-xl mb-2'>Settings</h3>
-							<input key={2 * s} ref={fileInputSettingsRef} type='file' accept='.json' className='hidden' onChange={handleUpload('Settings')} />
-							<VoidButtonBgDarken className='px-4 py-1 w-full' onClick={() => { fileInputSettingsRef.current?.click() }}>
-								Import Settings
-							</VoidButtonBgDarken>
-							<VoidButtonBgDarken className='px-4 py-1 w-full' onClick={() => onDownload('Settings')}>
-								Export Settings
-							</VoidButtonBgDarken>
-							<ConfirmButton className='px-4 py-1 w-full' onConfirm={() => { voidSettingsService.resetState(); }}>
-								Reset Settings
-							</ConfirmButton>
-						</div>
-						{/* Chats Subcategory */}
-						<div className='flex flex-col gap-2 w-full max-w-48'>
-							<h3 className='text-xl mb-2'>Chat</h3>
-							<input key={2 * s + 1} ref={fileInputChatsRef} type='file' accept='.json' className='hidden' onChange={handleUpload('Chats')} />
-							<VoidButtonBgDarken className='px-4 py-1 w-full' onClick={() => { fileInputChatsRef.current?.click() }}>
-								Import Chats
-							</VoidButtonBgDarken>
-							<VoidButtonBgDarken className='px-4 py-1 w-full' onClick={() => onDownload('Chats')}>
-								Export Chats
-							</VoidButtonBgDarken>
-							<ConfirmButton className='px-4 py-1 w-full' onConfirm={() => { chatThreadsService.resetState(); }}>
-								Reset Chats
-							</ConfirmButton>
-						</div>
-					</div>
-				</div>
-
-
-
-				<div className='mt-12'>
-
-					<h2 className={`text-3xl mb-2`}>Built-in Settings</h2>
-					<h4 className={`text-void-fg-3 mb-4`}>{`IDE settings, keyboard settings, and theme customization.`}</h4>
-
-					<ErrorBoundary>
-						<div className='flex flex-col gap-2 justify-center max-w-48 w-full'>
-							<VoidButtonBgDarken className='px-4 py-1' onClick={() => { commandService.executeCommand('workbench.action.openSettings') }}>
-								General Settings
-							</VoidButtonBgDarken>
-							<VoidButtonBgDarken className='px-4 py-1' onClick={() => { commandService.executeCommand('workbench.action.openGlobalKeybindings') }}>
-								Keyboard Settings
-							</VoidButtonBgDarken>
-							<VoidButtonBgDarken className='px-4 py-1' onClick={() => { commandService.executeCommand('workbench.action.selectTheme') }}>
-								Theme Settings
-							</VoidButtonBgDarken>
-							<VoidButtonBgDarken className='px-4 py-1' onClick={() => { nativeHostService.showItemInFolder(environmentService.logsHome.fsPath) }}>
-								Open Logs
-							</VoidButtonBgDarken>
-						</div>
-					</ErrorBoundary>
-				</div>
-
-
-				<div className='mt-12 max-w-[600px]'>
-					<h2 className={`text-3xl mb-2`}>AI Instructions</h2>
-					<h4 className={`text-void-fg-3 mb-4`}>
-						<ChatMarkdownRender inPTag={true} string={`
+								{/* AI Instructions section */}
+								<div className='max-w-[600px]'>
+									<h2 className={`text-3xl mb-2`}>AI Instructions</h2>
+									<h4 className={`text-void-fg-3 mb-4`}>
+										<ChatMarkdownRender inPTag={true} string={`
 System instructions to include with all AI requests.
 Alternatively, place a \`.voidrules\` file in the root of your workspace.
 								`} chatMessageLocation={undefined} />
-					</h4>
-					<ErrorBoundary>
-						<AIInstructionsBox />
-					</ErrorBoundary>
-				</div>
+									</h4>
+									<ErrorBoundary>
+										<AIInstructionsBox />
+									</ErrorBoundary>
+									{/* --- Disable System Message Toggle --- */}
+									<div className='my-4'>
+										<ErrorBoundary>
+											<div className='flex items-center gap-x-2'>
+												<VoidSwitch
+													size='xs'
+													value={!!settingsState.globalSettings.disableSystemMessage}
+													onChange={(newValue) => {
+														voidSettingsService.setGlobalSetting('disableSystemMessage', newValue);
+													}}
+												/>
+												<span className='text-void-fg-3 text-xs pointer-events-none'>
+													{'Disable system message'}
+												</span>
+											</div>
+										</ErrorBoundary>
+										<div className='text-void-fg-3 text-xs mt-1'>
+											{`When disabled, Void will not include anything in the system message except for content you specified above.`}
+										</div>
+									</div>
+								</div>
+							</div>
+
+
+
+							{/* MCP section */}
+							<div className={shouldShowTab('mcp') ? `` : 'hidden'}>
+								<ErrorBoundary>
+									<h2 className='text-3xl mb-2'>MCP</h2>
+									<h4 className={`text-void-fg-3 mb-4`}>
+										<ChatMarkdownRender inPTag={true} string={`
+Use Model Context Protocol to provide Agent mode with more tools.
+							`} chatMessageLocation={undefined} />
+									</h4>
+									<div className='my-2'>
+										<VoidButtonBgDarken className='px-4 py-1 w-full max-w-48' onClick={async () => { await mcpService.revealMCPConfigFile() }}>
+											Add MCP Server
+										</VoidButtonBgDarken>
+									</div>
+
+									<ErrorBoundary>
+										<MCPServersList />
+									</ErrorBoundary>
+								</ErrorBoundary>
+							</div>
+
+
+
+
+
+						</div>
+
+					</div>
+				</main>
 			</div>
 		</div>
-	</div>
+	);
 }
-

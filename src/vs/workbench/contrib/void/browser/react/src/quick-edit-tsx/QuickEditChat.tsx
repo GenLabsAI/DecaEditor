@@ -12,6 +12,9 @@ import { VOID_CTRL_K_ACTION_ID } from '../../../actionIDs.js';
 import { useRefState } from '../util/helpers.js';
 import { isFeatureNameDisabled } from '../../../../../../../workbench/contrib/void/common/voidSettingsTypes.js';
 
+
+
+
 export const QuickEditChat = ({
 	diffareaid,
 	onChangeHeight,
@@ -68,7 +71,7 @@ export const QuickEditChat = ({
 			startBehavior: 'keep-conflicts',
 		} as const
 
-		await editCodeService.callBeforeStartApplying(opts)
+		await editCodeService.callBeforeApplyOrEdit(opts)
 		const [newApplyingUri, applyDonePromise] = editCodeService.startApplying(opts) ?? []
 		// catch any errors by interrupting the stream
 		applyDonePromise?.catch(e => { if (newApplyingUri) editCodeService.interruptCtrlKStreaming({ diffareaid }) })
