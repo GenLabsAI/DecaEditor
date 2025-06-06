@@ -221,22 +221,7 @@ body {
 
 /* Keyboard Focus Indication Styles */
 
-.monaco-workbench [tabindex="0"]:focus,
-.monaco-workbench [tabindex="-1"]:focus,
-.monaco-workbench .synthetic-focus,
-.monaco-workbench select:focus,
-.monaco-workbench input[type="button"]:focus,
-.monaco-workbench input[type="text"]:focus,
-.monaco-workbench button:focus,
-.monaco-workbench textarea:focus,
-.monaco-workbench input[type="search"]:focus,
-.monaco-workbench input[type="checkbox"]:focus {
-	outline-width: 1px;
-	outline-style: solid;
-	outline-offset: -1px;
-	outline-color: var(--vscode-focusBorder);
-	opacity: 1;
-}
+
 
 .monaco-workbench.hc-black .synthetic-focus input,
 .monaco-workbench.hc-light .synthetic-focus input {
@@ -259,21 +244,7 @@ body {
 	border-color: transparent; /* outline is a square, but border has a radius, so we avoid this glitch when focused (https://github.com/microsoft/vscode/issues/26045) */
 }
 
-.monaco-workbench .monaco-list:not(.element-focused):focus:before {
-	position: absolute;
-	top: 0;
-	left: 0;
-	width: 100%;
-	height: 100%;
-	z-index: 15; /* make sure we are on top of the tree sticky scroll widget */
-	content: "";
-	pointer-events: none; /* enable click through */
-	outline: 1px solid; /* we still need to handle the empty tree or no focus item case */
-	outline-width: 1px;
-	outline-style: solid;
-	outline-offset: -1px;
-	outline-color: var(--vscode-focusBorder);
-}
+
 
 .monaco-workbench .monaco-list .monaco-list-row .monaco-highlighted-label .highlight {
 	color: var(--vscode-list-highlightForeground);

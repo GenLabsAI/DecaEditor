@@ -316,8 +316,13 @@
 .monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab .tab-label {
 	margin-top: auto;
 	margin-bottom: auto;
-	line-height: var(--editor-group-tab-height); /* aligns icon and label vertically centered in the tab */
+	line-height: calc(var(--editor-group-tab-height) - 8px); /* aligns icon and label vertically centered in the tab */
 }
+
+.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab.selected {
+	filter: brightness(0.8);
+}
+
 
 .monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab.sizing-shrink .tab-label,
 .monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab.sizing-fixed .tab-label {

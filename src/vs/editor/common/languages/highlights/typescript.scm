@@ -319,7 +319,7 @@
 (regex_flags) @keyword
 
 [
-  "void"
+  "Deca"
 ] @support.type.primitive
 
 [

@@ -73,7 +73,7 @@ function getExtensionDownloadStream(extension: IExtensionDefinition) {
 
 	if (extension.vsix) {
 		input = ext.fromVsix(path.join(root, extension.vsix), extension);
-	} else { // Void - ext-from-gh.patch
+	} else { // Deca - ext-from-gh.patch
 		input = ext.fromGithub(extension);
 	}
 

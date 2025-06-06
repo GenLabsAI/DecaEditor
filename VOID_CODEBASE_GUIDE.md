@@ -1,12 +1,10 @@
-# Void Codebase Guide
+# Deca Codebase Guide
 
-The Void codebase is not as intimidating as it seems!
+The Deca codebase is not as intimidating as it seems!
 
-Most of Void's code lives in the folder `src/vs/workbench/contrib/void/`.
+Most of Deca's code lives in the folder `src/vs/workbench/contrib/Deca/`.
 
-The purpose of this document is to explain how Void's codebase works. If you want build instructions instead, see [Contributing](https://github.com/voideditor/void/blob/main/HOW_TO_CONTRIBUTE.md).
-
-
+The purpose of this document is to explain how Deca's codebase works. If you want build instructions instead, see [Contributing](https://github.com/Decaeditor/Deca/blob/main/HOW_TO_CONTRIBUTE.md).
 
 
 
@@ -14,10 +12,12 @@ The purpose of this document is to explain how Void's codebase works. If you wan
 
 
 
-## Void Codebase Guide
+
+
+## Deca Codebase Guide
 
 ### VSCode Rundown
-Here's a VSCode rundown if you're just getting started with Void. You can also see Microsoft's [wiki](https://github.com/microsoft/vscode/wiki/Source-Code-Organization) for some pictures. VSCode is an Electron app. Electron runs two processes: a **main** process (for internals) and a **browser** process (browser means HTML in general, not just "web browser").
+Here's a VSCode rundown if you're just getting started with Deca. You can also see Microsoft's [wiki](https://github.com/microsoft/vscode/wiki/Source-Code-Organization) for some pictures. VSCode is an Electron app. Electron runs two processes: a **main** process (for internals) and a **browser** process (browser means HTML in general, not just "web browser").
 <p align="center" >
 <img src="https://github.com/user-attachments/assets/eef80306-2bfe-4cac-ba15-6156f65ab3bb" alt="Credit - https://github.com/microsoft/vscode/wiki/Source-Code-Organization" width="700px">
 </p>
@@ -54,7 +54,7 @@ Here's some terminology you might want to know about when working inside VSCode:
 
 ### Internal LLM Message Pipeline
 
-Here's a picture of all the dependencies that are relevent between the time you first send a message through Void's sidebar, and the time a request is sent to your provider.
+Here's a picture of all the dependencies that are relevent between the time you first send a message through Deca's sidebar, and the time a request is sent to your provider.
 Sending LLM messages from the main process avoids CSP issues with local providers and lets us use node_modules more easily.
 
 
@@ -64,26 +64,26 @@ Sending LLM messages from the main process avoids CSP issues with local provider
 
 
 
-**Notes:** `modelCapabilities` is an important file that must be updated when new models come out! 
+**Notes:** `modelCapabilities` is an important file that must be updated when new models come out!
 
 
 ### Apply
 
-Void has two types of Apply: **Fast Apply** (uses Search/Replace, see below), and **Slow Apply** (rewrites whole file).
+Deca has two types of Apply: **Fast Apply** (uses Search/Replace, see below), and **Slow Apply** (rewrites whole file).
 
 When you click Apply and Fast Apply is enabled, we prompt the LLM to output Search/Replace block(s) like this:
 ```
 <<<<<<< ORIGINAL
-// original code goes here 
+// original code goes here
 =======
 // replaced code goes here
 >>>>>>> UPDATED
 ```
-This is what allows Void to quickly apply code even on 1000-line files. It's the same as asking the LLM to press Ctrl+F and enter in a search/replace query. 
+This is what allows Deca to quickly apply code even on 1000-line files. It's the same as asking the LLM to press Ctrl+F and enter in a search/replace query.
 
 ### Apply Inner Workings
 
-The `editCodeService` file runs Apply. The same exact code is also used when the LLM calls the Edit tool, and when you submit Cmd+K. Just different versions of Fast/Slow Apply mode. 
+The `editCodeService` file runs Apply. The same exact code is also used when the LLM calls the Edit tool, and when you submit Cmd+K. Just different versions of Fast/Slow Apply mode.
 
 Here is some important terminology:
 - A **DiffZone** is a {startLine, endLine} region of text where we compute and show red/green areas, or **Diffs**. When any changes are made to a file, we loop through all the DiffAreas on that file and refresh its Diffs.
@@ -97,10 +97,10 @@ How Apply works:
 
 
 ### Writing Files Inner Workings
-When Void wants to change your code, it just writes to a text model. This means all you need to know to write to a file is its URI - you don't have to load it, save it, etc. There are some annoying background URI/model things to think about to get this to work, but we handled them all in `voidModelService`.
+When Deca wants to change your code, it just writes to a text model. This means all you need to know to write to a file is its URI - you don't have to load it, save it, etc. There are some annoying background URI/model things to think about to get this to work, but we handled them all in `DecaModelService`.
 
-### Void Settings Inner Workings
-We have a service `voidSettingsService` that stores all your Void settings (providers, models, global Void settings, etc). Imagine this as an implicit dependency for any of the core Void services:
+### Deca Settings Inner Workings
+We have a service `DecaSettingsService` that stores all your Deca settings (providers, models, global Deca settings, etc). Imagine this as an implicit dependency for any of the core Deca services:
 
 <div align="center">
 	<img width="800" src="https://github.com/user-attachments/assets/9f3cb68c-a61b-4810-8429-bb90b992b3fa">
@@ -110,7 +110,7 @@ Here's a guide to some of the terminology we're using:
 - **FeatureName**: Autocomplete | Chat | CtrlK | Apply
 - **ModelSelection**: a {providerName, modelName} pair.
 - **ProviderName**: The name of a provider: `'ollama'`, `'openAI'`, etc.
-- **ModelName**: The name of a model (string type, eg `'gpt-4o'`). 
+- **ModelName**: The name of a model (string type, eg `'gpt-4o'`).
 - **RefreshProvider**: a provider that we ping repeatedly to update the models list.
 - **ChatMode** = normal | gather | agent
 
@@ -126,13 +126,13 @@ Here's a guide to some of the terminology we're using:
 
 
 ### Build process
-If you want to know how our build pipeline works, see our build repo [here](https://github.com/voideditor/void-builder).
+If you want to know how our build pipeline works, see our build repo [here](https://github.com/Decaeditor/Deca-builder).
 
 
 
 ## VSCode Codebase Guide
 
-The Void team put together this list of links to get up and running with VSCode's sourcecode, the foundation of Void. We hope it's helpful!
+The Deca team put together this list of links to get up and running with VSCode's sourcecode, the foundation of Deca. We hope it's helpful!
 
 #### Links for Beginners
 
@@ -156,7 +156,7 @@ The Void team put together this list of links to get up and running with VSCode'
 
 #### VSCode's Extension API
 
-Void is no longer an extension, so these links are no longer required, but they might be useful if we ever build an extension again.
+Deca is no longer an extension, so these links are no longer required, but they might be useful if we ever build an extension again.
 
 - [Files you need in an extension](https://code.visualstudio.com/api/get-started/extension-anatomy).
 

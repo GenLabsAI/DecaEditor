@@ -12,6 +12,13 @@
 	justify-content: flex-start;
 	outline-style: none;
 }
+.breadcrumbs-below-tabs .monaco-breadcrumbs {
+	background-color: var(--vscode-breadcrumb-background);
+    border-radius: 8px;
+    margin-left: 4px;
+    width: calc(100% - 8px) !important;
+	filter: brightness(0.8);
+}
 
 .monaco-breadcrumbs .monaco-breadcrumb-item {
 	display: flex;

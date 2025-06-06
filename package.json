@@ -70,6 +70,9 @@
     "perf": "node scripts/code-perf.js",
     "update-build-ts-version": "npm install typescript@next && tsc -p ./build/tsconfig.build.json"
   },
+  "config": {
+  "shell": "cmd.exe"
+},
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@floating-ui/react": "^0.27.5",

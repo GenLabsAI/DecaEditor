@@ -68,6 +68,22 @@
 	padding: 2px;
 }
 
+.monaco-pane-view .pane.vertical *:not(.monaco-tl-twistie):not(.monaco-tl-indent):not(.selected):not(.selected *):not(.monaco-list-row:hover):not(.monaco-list-row:hover *):not(.slider):not(.monaco-list-rows *):not(button):not(button *) {
+    background: var(--vscode-tab-activeBackground);
+}
+
+.monaco-pane-view .pane.vertical .monaco-tl-indent {
+    visibility: hidden;
+}
+
+.monaco-pane-view .pane.vertical {
+    scale: 0.95 0.98;
+    border-radius: 8px;
+    background: var(--vscode-tab-activeBackground);
+    outline: none;
+    border: none;
+}
+.monaco-pane-view .pane.vertical *:not(.monaco-tl-twistie):not(.monaco-tl-indent):not(.selected):not(.selected *):not(.monaco-list-row:hover):not(.monaco-list-row:hover *):not(.slider):not(.monaco-list-rows *)
 /* TODO: actions should be part of the pane, but they aren't yet */
 .monaco-pane-view .pane:hover > .pane-header.expanded > .actions,
 .monaco-pane-view .pane:focus-within > .pane-header.expanded > .actions,

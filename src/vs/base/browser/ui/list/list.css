@@ -10,6 +10,10 @@
 	white-space: nowrap;
 }
 
+.quick-input-list .monaco-list-rows {
+    background: transparent !important;
+}
+
 .monaco-list.mouse-support {
 	user-select: none;
 	-webkit-user-select: none;

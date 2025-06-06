@@ -30,12 +30,7 @@
 	padding: 2px 8px;
 }
 
-.monaco-workbench .workbench-hover-container.locked .workbench-hover {
-	outline: 1px solid var(--vscode-editorHoverWidget-border);
-}
-.monaco-workbench .workbench-hover-container:focus-within.locked .workbench-hover {
-	outline-color: var(--vscode-focusBorder);
-}
+
 
 .monaco-workbench .workbench-hover-pointer {
 	position: absolute;

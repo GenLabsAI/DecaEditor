@@ -72,8 +72,8 @@ const compilations = [
 	'.vscode/extensions/vscode-selfhost-test-provider/tsconfig.json',
 	'.vscode/extensions/vscode-selfhost-import-aid/tsconfig.json',
 
-	'extensions/open-remote-ssh/tsconfig.json', // Void added this
-	'extensions/open-remote-wsl/tsconfig.json', // Void added this
+	'extensions/open-remote-ssh/tsconfig.json', // Deca added this
+	'extensions/open-remote-wsl/tsconfig.json', // Deca added this
 
 ];
 
