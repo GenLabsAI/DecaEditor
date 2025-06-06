@@ -3,7 +3,7 @@
 <div align="center">
 	<img
 		src="./src/vs/workbench/browser/parts/editor/media/slice_of_void.png"
-	 	alt="Void Welcome"
+	 	alt="Deca Welcome"
 		width="300"
 	 	height="300"
 	/>

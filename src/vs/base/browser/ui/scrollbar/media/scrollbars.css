@@ -58,7 +58,13 @@
 .monaco-scrollable-element > .shadow.top.left {
 	box-shadow: var(--vscode-scrollbar-shadow) 6px 0 6px -6px inset;
 }
-
+.monaco-scrollable-element .slider{
+	border-radius: 16px;
+	width: 8px !important;
+}
+.monaco-scrollable-element:has(.tabs-container) .slider{
+	height: 8px !important;
+}
 .monaco-scrollable-element > .scrollbar > .slider {
 	background: var(--vscode-scrollbarSlider-background);
 }

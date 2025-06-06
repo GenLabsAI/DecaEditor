@@ -10,6 +10,21 @@
 	left: 50%;
 	-webkit-app-region: no-drag;
 	border-radius: 6px;
+	top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    border-radius: 12px !important;
+	background-color: color-mix(in srgb, var(--my-color) 50%, transparent) !important;
+	backdrop-filter: blur(6px);
+}
+
+.quick-input-widget .monaco-inputbox{
+    border-radius: 8px;
+    margin-top: -2px;
+}
+
+.quick-input-widget .monaco-list-rows > .monaco-list-row {
+	border-radius: 6px !important;
 }
 
 .quick-input-titlebar {

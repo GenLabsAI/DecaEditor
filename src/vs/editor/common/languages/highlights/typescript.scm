@@ -416,6 +416,7 @@
 (unary_expression
   "void" @keyword.operator.expression.void.ts)
 
+
 [
   "new"
 ] @keyword.operator.new.ts

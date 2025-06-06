@@ -140,6 +140,7 @@ module.exports.indentationFilter = [
 	'!extensions/ipynb/notebook-out/**',
 	'!extensions/notebook-renderers/renderer-out/*.js',
 	'!extensions/simple-browser/media/*.js',
+
 ];
 
 module.exports.copyrightFilter = [

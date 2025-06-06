@@ -26,7 +26,6 @@ import { IAccessibilitySignalService } from '../../../../../../../platform/acces
 import { IEditorProgressService } from '../../../../../../../platform/progress/common/progress.js';
 import { detectLanguage } from '../../../../common/helpers/languageHelpers.js';
 
-
 // type guard
 const isConstructor = (f: any)
 	: f is { new(...params: any[]): any } => {
@@ -753,7 +752,7 @@ export const VoidInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fun
 
 			disabled={!isEnabled}
 
-			className={`w-full resize-none max-h-[500px] overflow-y-auto text-void-fg-1 placeholder:text-void-fg-3 ${className}`}
+			className={`w-full resize-none max-h-[500px] overflow-y-auto text-void-fg-1 placeholder:text-void-fg-3 rounded-md ${className}`}
 			style={{
 				// defaultInputBoxStyles
 				background: asCssVariable(inputBackground),

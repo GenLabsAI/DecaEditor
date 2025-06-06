@@ -71,6 +71,9 @@
     "perf": "node scripts/code-perf.js",
     "update-build-ts-version": "npm install typescript@next && tsc -p ./build/tsconfig.build.json"
   },
+  "config": {
+  "shell": "cmd.exe"
+},
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
     "@c4312/eventsource-umd": "^3.0.5",

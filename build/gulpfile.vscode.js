@@ -284,6 +284,7 @@ function packageTask(platform, arch, sourceFolderName, destinationFolderName, op
 				this.emit('data', file);
 			}));
 
+
 		let productJsonContents;
 		const productJsonStream = gulp.src(['product.json'], { base: '.' })
 			.pipe(json({ commit, date: readISODate('out-build'), checksums, version }))
